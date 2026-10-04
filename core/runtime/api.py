@@ -7,6 +7,10 @@ from core.runtime.app import MarkRuntime
 from core.agent.orchestrator import get_default_orchestrator
 from core.agent.task import Task, TaskStatus
 from core.tools.base import CancellationToken, CancelReason
+from core.mission.models import Mission, MissionState, TriggerType
+from core.mission.store import get_default_store
+import time
+import uuid
 
 app = FastAPI(title="MARK XLVIII Runtime API", version="7.0")
 _runtime: Optional[MarkRuntime] = None
@@ -96,3 +100,102 @@ async def cancel_task(task_id: str):
 @app.get("/events")
 async def get_events():
     return {"status": "Event streaming not implemented via polling. Attach via WebSocket."}
+
+class MissionCreateRequest(BaseModel):
+    name: str
+    description: str
+    owner: str = "user"
+    trigger_type: str = "MANUAL"
+    cron_expression: Optional[str] = None
+    trigger_event: Optional[str] = None
+
+@app.post("/missions")
+async def create_mission(req: MissionCreateRequest):
+    store = get_default_store()
+    mission = Mission(
+        id=str(uuid.uuid4()),
+        name=req.name,
+        description=req.description,
+        owner=req.owner,
+        state=MissionState.DRAFT if req.trigger_type == "MANUAL" else MissionState.SCHEDULED,
+        trigger_type=TriggerType(req.trigger_type),
+        created_at=time.time(),
+        updated_at=time.time(),
+        cron_expression=req.cron_expression,
+        trigger_event=req.trigger_event
+    )
+    store.save(mission)
+    return mission.to_dict()
+
+@app.get("/missions")
+async def list_missions(state: Optional[str] = None):
+    store = get_default_store()
+    st = MissionState(state) if state else None
+    missions = store.list_missions(state=st)
+    return [m.to_dict() for m in missions]
+
+@app.get("/missions/{mission_id}")
+async def get_mission(mission_id: str):
+    store = get_default_store()
+    mission = store.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return mission.to_dict()
+
+@app.post("/missions/{mission_id}/run")
+async def run_mission(mission_id: str):
+    store = get_default_store()
+    mission = store.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+        
+    mission.state = MissionState.RUNNING
+    mission.last_execution_at = time.time()
+    store.save(mission)
+    
+    # Fire and forget execution to keep API responsive
+    orchestrator = get_default_orchestrator()
+    task = Task(goal=f"MISSION: {mission.name}\n{mission.description}")
+    token = CancellationToken()
+    asyncio.create_task(orchestrator._run_task_impl(task, task.goal, token))
+    
+    return {"status": "started", "task_id": task.task_id}
+
+@app.post("/missions/{mission_id}/pause")
+async def pause_mission(mission_id: str):
+    store = get_default_store()
+    mission = store.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    mission.state = MissionState.PAUSED
+    store.save(mission)
+    return {"status": "paused"}
+
+@app.post("/missions/{mission_id}/resume")
+async def resume_mission(mission_id: str):
+    store = get_default_store()
+    mission = store.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    mission.state = MissionState.SCHEDULED
+    store.save(mission)
+    return {"status": "resumed"}
+
+@app.post("/missions/{mission_id}/cancel")
+async def cancel_mission(mission_id: str):
+    store = get_default_store()
+    mission = store.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    mission.state = MissionState.CANCELLED
+    store.save(mission)
+    return {"status": "cancelled"}
+
+@app.get("/missions/{mission_id}/history")
+async def get_mission_history(mission_id: str):
+    store = get_default_store()
+    mission = store.get(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    # Stubbed history for now; in a real app this would query a mission_history table
+    return {"history": [{"event": "created", "timestamp": mission.created_at}]}

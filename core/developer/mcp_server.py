@@ -6,6 +6,10 @@ from core.runtime.app import MarkRuntime
 from core.agent.orchestrator import get_default_orchestrator
 from core.agent.task import Task
 from core.tools.base import CancellationToken
+from core.mission.models import Mission, MissionState, TriggerType
+from core.mission.store import get_default_store
+import uuid
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +29,11 @@ class MCPServer:
             "get_task_status": "Check the status of a submitted developer task",
             "inspect_project": "Analyze the current project and return metadata",
             "search_code": "Search code using safe bounded search",
-            "inspect_git": "Read git status and current branch"
+            "inspect_git": "Read git status and current branch",
+            "create_mission": "Create a new proactive or recurring mission",
+            "list_missions": "List all missions and their statuses",
+            "run_mission": "Manually trigger a mission execution",
+            "cancel_mission": "Cancel a scheduled or running mission"
         }
 
     async def handle_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,5 +84,55 @@ class MCPServer:
                 return {"content": [{"type": "text", "text": f"Branch: {git.current_branch()}\nStatus: {git.status()}"}]}
             except Exception as e:
                 return {"isError": True, "content": [{"type": "text", "text": str(e)}]}
+                
+        elif tool_name == "create_mission":
+            store = get_default_store()
+            name = args.get("name")
+            desc = args.get("description")
+            if not name or not desc:
+                return {"isError": True, "content": [{"type": "text", "text": "Missing name or description"}]}
+            m = Mission(
+                id=str(uuid.uuid4()),
+                name=name,
+                description=desc,
+                owner="developer",
+                state=MissionState.SCHEDULED,
+                trigger_type=TriggerType.CRON if args.get("cron") else TriggerType.MANUAL,
+                cron_expression=args.get("cron"),
+                created_at=time.time(),
+                updated_at=time.time()
+            )
+            store.save(m)
+            return {"content": [{"type": "text", "text": f"Created mission {m.id}"}]}
+            
+        elif tool_name == "list_missions":
+            store = get_default_store()
+            missions = store.list_missions()
+            resp = "\\n".join([f"[{m.id}] {m.name} - {m.state.value}" for m in missions])
+            return {"content": [{"type": "text", "text": resp}]}
+            
+        elif tool_name == "run_mission":
+            mid = args.get("mission_id")
+            store = get_default_store()
+            mission = store.get(mid) if mid else None
+            if not mission:
+                return {"isError": True, "content": [{"type": "text", "text": "Mission not found"}]}
+            mission.state = MissionState.RUNNING
+            store.save(mission)
+            
+            orchestrator = get_default_orchestrator()
+            task = Task(goal=f"MISSION: {mission.name}\\n{mission.description}")
+            asyncio.create_task(orchestrator._run_task_impl(task, task.goal, CancellationToken()))
+            return {"content": [{"type": "text", "text": f"Mission {mid} started."}]}
+            
+        elif tool_name == "cancel_mission":
+            mid = args.get("mission_id")
+            store = get_default_store()
+            mission = store.get(mid) if mid else None
+            if not mission:
+                return {"isError": True, "content": [{"type": "text", "text": "Mission not found"}]}
+            mission.state = MissionState.CANCELLED
+            store.save(mission)
+            return {"content": [{"type": "text", "text": f"Mission {mid} cancelled."}]}
                 
         return {"isError": True, "content": [{"type": "text", "text": "Unknown or restricted tool"}]}
