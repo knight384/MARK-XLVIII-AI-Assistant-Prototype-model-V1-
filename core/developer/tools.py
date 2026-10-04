@@ -2,7 +2,7 @@ from typing import Any
 from core.tools.base import Tool, ToolContext, ToolResult
 from core.tools.schemas import ToolSchema, ParamSchema
 from core.tools.metadata import ToolMetadata, RiskLevel
-from core.runtime.events import EventBus, Event, EventType
+from core.runtime.events import get_default_bus, RuntimeEvent, EventPriority
 
 from core.developer.project import ProjectAnalyzer
 from core.developer.git import GitIntelligence
@@ -49,7 +49,7 @@ class DeveloperGitReadTool(Tool):
     
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         op = args["operation"]
-        EventBus.publish(Event(type=EventType.INFO, source="developer_git_read", payload={"operation": op}))
+        get_default_bus().publish(RuntimeEvent(event_type="developer_git_read", payload={"operation": op}))
         git = GitIntelligence(".")
         try:
             if op == "status":
@@ -62,10 +62,10 @@ class DeveloperGitReadTool(Tool):
                 res = git.current_branch()
             else:
                 return ToolResult.fail(self.name, error="Unknown operation")
-            EventBus.publish(Event(type=EventType.INFO, source="developer_git_read", payload={"status": "completed", "operation": op}))
+            get_default_bus().publish(RuntimeEvent(event_type="developer_git_read", payload={"status": "completed", "operation": op}))
             return ToolResult.ok(self.name, data=res)
         except Exception as e:
-            EventBus.publish(Event(type=EventType.ERROR, source="developer_git_read", payload={"error": str(e)}))
+            get_default_bus().publish(RuntimeEvent(event_type="developer_git_read_error", payload={"error": str(e)}, priority=EventPriority.HIGH))
             return ToolResult.fail(self.name, error=str(e))
 
 class DeveloperGitWriteTool(Tool):
@@ -87,6 +87,7 @@ class DeveloperGitWriteTool(Tool):
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         op = args["operation"]
         import subprocess
+        git = GitIntelligence(".")
         try:
             if op == "commit":
                 msg = args.get("message", "Auto-commit")
@@ -94,8 +95,12 @@ class DeveloperGitWriteTool(Tool):
                 res = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True, timeout=10)
                 return ToolResult.ok(self.name, data=res.stdout) if res.returncode == 0 else ToolResult.fail(self.name, error=res.stderr)
             elif op == "push":
-                res = subprocess.run(["git", "push"], capture_output=True, text=True, timeout=20)
-                return ToolResult.ok(self.name, data=res.stdout) if res.returncode == 0 else ToolResult.fail(self.name, error=res.stderr)
+                # Uses new adapted GitIntelligence push
+                res = git.push(remote_url="origin")
+                if res.get("success"):
+                    return ToolResult.ok(self.name, data="Push successful.")
+                else:
+                    return ToolResult.fail(self.name, error=res.get("error", "Unknown error"))
         except Exception as e:
             return ToolResult.fail(self.name, error=str(e))
             
