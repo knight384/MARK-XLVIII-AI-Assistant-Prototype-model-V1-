@@ -7,13 +7,21 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from enum import Enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .metadata import ToolMetadata
 from .results import ToolResult
 from .schemas import ToolSchema
+
+class CancelReason(str, Enum):
+    USER_REQUEST = "user_request"
+    TIMEOUT = "timeout"
+    DISCONNECT = "disconnect"
+    SYSTEM_SHUTDOWN = "system_shutdown"
+
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +36,19 @@ class CancellationToken:
 
     def __init__(self):
         self._event = threading.Event()
+        self._reason: Optional[CancelReason] = None
 
-    def cancel(self) -> None:
+    def cancel(self, reason: CancelReason = CancelReason.USER_REQUEST) -> None:
+        self._reason = reason
         self._event.set()
 
     @property
     def is_cancelled(self) -> bool:
         return self._event.is_set()
+        
+    @property
+    def reason(self) -> Optional[CancelReason]:
+        return self._reason
 
 
 @dataclass

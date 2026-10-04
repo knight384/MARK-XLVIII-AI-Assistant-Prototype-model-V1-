@@ -22,6 +22,7 @@ from .errors import ModelError, ModelUnavailableError
 from .policies import FallbackPolicy, RetryPolicy
 from .registry import ProviderRegistry, get_default_registry
 from .router import ModelRouter, NoCompatibleModelError, RoutingDecision
+from .tiers import ModelTier
 from .types import Message, ModelRequest, ModelResponse
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class ModelGateway:
         self,
         request: ModelRequest,
         *,
-        task_type: str = "default",
+        task_type: str | ModelTier = "default",
         required_capabilities: tuple[str, ...] = (),
         privacy: str | None = None,
         provider_id: str | None = None,
@@ -109,7 +110,7 @@ def generate_text(
     prompt: str,
     *,
     system: str | None = None,
-    task_type: str = "default",
+    task_type: str | ModelTier = "default",
     tools: list[dict] | None = None,
 ) -> str:
     """Convenience wrapper for the common case used throughout actions/*.py:

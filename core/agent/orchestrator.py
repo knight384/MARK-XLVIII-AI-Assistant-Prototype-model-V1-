@@ -77,6 +77,22 @@ class Orchestrator:
         visible, not hidden behind an exception)."""
         task = Task(goal=goal)
         cancellation_token = cancellation_token or CancellationToken()
+        try:
+            return await self._run_task_impl(task, goal, cancellation_token, config)
+        except Exception as e:
+            logger.exception("[Orchestrator] Uncaught exception during task execution")
+            task.set_status(TaskStatus.FAILED)
+            task.errors.append(f"Uncaught orchestration exception: {e}")
+            from core.runtime.events import get_default_bus, RuntimeEvent, EventPriority
+            get_default_bus().publish(RuntimeEvent(
+                event_type="task_crashed",
+                payload={"task_id": task.task_id, "error": str(e)},
+                priority=EventPriority.HIGH
+            ))
+            return task
+
+    async def _run_task_impl(self, task: Task, goal: str, cancellation_token: CancellationToken,
+                        config=None) -> Task:
         task.observations.append(Observation(source="system", type="task_created", content=goal))
         logger.info("[Orchestrator] Task created: %s (id=%s)", goal, task.task_id)
 

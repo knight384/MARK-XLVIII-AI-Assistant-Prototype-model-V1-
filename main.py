@@ -779,18 +779,70 @@ class JarvisLive:
             await asyncio.sleep(delay)
 
 def main():
-    ui = JarvisUI("face.png")
-
-    def runner():
-        ui.wait_for_api_key()
-        jarvis = JarvisLive(ui)
+    import sys
+    from core.runtime.app import MarkRuntime
+    from core.runtime.mode import RuntimeMode
+    
+    is_headless = "--headless" in sys.argv
+    mode = RuntimeMode.HEADLESS if is_headless else RuntimeMode.DESKTOP
+    
+    runtime = MarkRuntime(mode=mode)
+    
+    if is_headless:
+        from core.runtime.headless import HeadlessUI
+        ui = HeadlessUI()
+        
+        async def headless_runner():
+            await runtime.initialize()
+            await runtime.start()
+            jarvis = JarvisLive(ui)
+            
+            # Start jarvis.run as task
+            jarvis_task = asyncio.create_task(jarvis.run())
+            
+            try:
+                # Wait until interrupted
+                while True:
+                    await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                jarvis_task.cancel()
+                await runtime.stop()
+                
         try:
-            asyncio.run(jarvis.run())
+            asyncio.run(headless_runner())
         except KeyboardInterrupt:
             logger.info("\n🔴 Shutting down...")
+    else:
+        ui = JarvisUI("face.png")
 
-    threading.Thread(target=runner, daemon=True).start()
-    ui.root.mainloop()
+        def runner():
+            async def desktop_runner():
+                await runtime.initialize()
+                await runtime.start()
+                
+                ui.wait_for_api_key()
+                jarvis = JarvisLive(ui)
+                
+                jarvis_task = asyncio.create_task(jarvis.run())
+                
+                try:
+                    await runtime.wait_until_shutdown()
+                finally:
+                    jarvis_task.cancel()
+                    await runtime.stop()
+                    
+            try:
+                asyncio.run(desktop_runner())
+            except KeyboardInterrupt:
+                logger.info("\n🔴 Shutting down...")
+
+        threading.Thread(target=runner, daemon=True).start()
+        try:
+            ui.root.mainloop()
+        finally:
+            runtime.trigger_shutdown()
 
 if __name__ == "__main__":
     main()

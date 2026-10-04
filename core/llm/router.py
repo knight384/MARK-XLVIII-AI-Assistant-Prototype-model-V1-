@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from .registry import ProviderRegistry
 from .providers.base import ModelInfo
+from .tiers import ModelTier
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,14 @@ class NoCompatibleModelError(Exception):
 _DEFAULT_TASK_ROUTES: dict[str, list[tuple[str, str]]] = {
     "default":  [("gemini", "gemini-2.5-flash")],
     "planner":  [("gemini", "gemini-2.5-flash")],
-    "coding":   [("gemini", "gemini-2.5-flash")],
-    "vision":   [("gemini", "gemini-2.5-flash")],
-    "fast":     [("gemini", "gemini-2.5-flash-lite")],
-    "local":    [("ollama", None)],       # None => use provider's configured default model
+    ModelTier.FAST.value:      [("gemini", "gemini-2.5-flash-lite")],
+    ModelTier.STANDARD.value:  [("gemini", "gemini-2.5-flash")],
+    ModelTier.REASONING.value: [("gemini", "gemini-2.5-pro")],
+    ModelTier.CODING.value:    [("gemini", "gemini-2.5-flash")],
+    ModelTier.VISION.value:    [("gemini", "gemini-2.5-flash")],
+    ModelTier.REALTIME.value:  [("gemini", "gemini-2.5-flash-native-audio-preview")],
+    ModelTier.EMBEDDING.value: [("gemini", "text-embedding-004")],
+    ModelTier.LOCAL.value:     [("ollama", None)],
     "private":  [("ollama", None)],
 }
 
@@ -56,13 +61,15 @@ class ModelRouter:
 
     def route(
         self,
-        task_type: str = "default",
+        task_type: str | ModelTier = "default",
         *,
         required_capabilities: tuple[str, ...] = (),
         privacy: str | None = None,           # "local" forces local-only routing
         override_provider: str | None = None,
         override_model: str | None = None,
     ) -> RoutingDecision:
+        if isinstance(task_type, ModelTier):
+            task_type = task_type.value
         # 1. Explicit override always wins if the target is actually available (Part 17).
         if override_provider:
             decision = self._try_explicit(override_provider, override_model, reason="explicit user override")
