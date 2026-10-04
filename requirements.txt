@@ -1,0 +1,92 @@
+# JARVIS / MARK XLVIII -- runtime dependency manifest (Phase 1)
+#
+# This file is now the SOURCE OF TRUTH for required packages. core/installer.py
+# remains as a convenience first-run fallback for local installs and is kept
+# aligned with this list, but `pip install -r requirements.txt` is the
+# canonical way to reproduce a working environment.
+#
+# Versions are constrained (lower bounds / compatible-release) rather than
+# hard-pinned to exact versions, since this project has never previously
+# tracked exact versions and hard-pinning untested versions in Phase 1 risks
+# introducing new incompatibilities. Tightening these to exact pins is
+# reasonable follow-up work once this environment has been exercised.
+#
+# Platform-conditional packages (Windows-only) use PEP 508 environment
+# markers so `pip install -r requirements.txt` works unmodified on
+# macOS/Linux too.
+
+# --- UI ---
+PyQt6>=6.6
+
+# --- Core AI / audio / vision ---
+google-genai>=0.3
+sounddevice>=0.4.6
+numpy>=1.26
+Pillow>=10.0
+opencv-python>=4.9
+mss>=9.0
+soundfile>=0.12
+miniaudio>=1.59
+
+# --- STT / TTS (engine selection is runtime-configurable; installer.py only
+#     installs the engine actually selected, but requirements.txt lists both
+#     so a full manual install works regardless of engine choice) ---
+faster-whisper>=1.0
+vosk>=0.3.45
+edge-tts>=6.1
+# kokoro>=0.9 dropped AlbertModel/AutoModel from transformers -- version
+# floor matches the constraint already enforced by core/installer.py.
+kokoro>=0.9
+
+# --- Web / search / documents ---
+requests>=2.31
+beautifulsoup4>=4.12
+ddgs>=6.0
+youtube-transcript-api>=0.6
+python-pptx>=0.6.23
+python-docx>=1.1
+PyPDF2>=3.0
+pdfplumber>=0.11
+pandas>=2.1
+qrcode>=7.4
+
+# --- Desktop / OS control (cross-platform) ---
+pyautogui>=0.9.54
+pyperclip>=1.8
+pygetwindow>=0.0.9
+send2trash>=1.8
+plyer>=2.1
+
+# --- Browser automation ---
+playwright>=1.44
+# After installing this package, run once:  python -m playwright install chromium
+# (core/installer.py already does this automatically on first launch.)
+
+# --- Dashboard (remote control web UI) ---
+fastapi>=0.111
+uvicorn[standard]>=0.29
+cryptography>=42.0
+python-multipart>=0.0.9   # optional: enables dashboard file uploads
+
+# --- Secret storage backend (Phase 1) ---
+# Preferred backend for core.config.secrets.SecretStore. If unavailable at
+# runtime (e.g. some headless Linux setups), the app falls back to a local,
+# gitignored secrets file automatically -- see core/config/secrets.py.
+keyring>=25.0
+
+# --- Windows-only OS integration ---
+comtypes>=1.2; sys_platform == "win32"
+pycaw>=20230407; sys_platform == "win32"
+win10toast>=0.9; sys_platform == "win32"
+pywinauto>=0.6.8; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"
+WMI>=1.5.1; sys_platform == "win32"
+
+# --- Optional / hardware-dependent (used by select tools; not required for
+#     core voice-assistant functionality) ---
+pynvml>=11.5   # NVIDIA GPU stats in system_monitor.py, if an NVIDIA GPU is present
+torch>=2.2     # required by the kokoro TTS engine only
+
+# --- Development / testing only (not required to run the app) ---
+pytest>=8.0
+pytest-asyncio>=0.24

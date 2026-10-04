@@ -1,0 +1,104 @@
+app_name: Google Slides
+domains:
+  - docs.google.com/presentation
+  - slides.google.com
+keywords:
+  - slide deck
+  - pitch deck
+  - create a presentation
+  - make a presentation
+  - new presentation
+  - add a slide
+  - new slide
+  - duplicate slide
+  - delete slide
+  - reorder slides
+  - speaker notes
+  - title slide
+  - powerpoint
+  - ppt
+  - start the slideshow
+  - present the deck
+  - present the slides
+description: Google Slides — create/open/rename decks, add/duplicate/delete/reorder slides, edit titles and body text with content verification, speaker notes, insert images, change layouts, start the slideshow.
+version: 2
+instructions: |
+  URL: https://docs.google.com/presentation/d/{PRESENTATION_ID}/edit#slide=id.{SLIDE_ID}
+
+  ### TOOLS
+  ALLOWED: browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_hover, browser_scroll, browser_upload_file.
+  BANNED: browser_evaluate, browser_screenshot.
+  - `browser_type(element_id, text, submit?, append?)` — REPLACES the element's content by default. `append=true` preserves existing content and types at the end. `submit=true` presses Enter after typing (the only key it can press).
+  - `browser_press_key(key)` — sends a REAL key event to the page, with modifiers: `"Tab"`, `"Enter"`, `"Escape"`, `"Delete"`, `"Ctrl+M"`, `"Ctrl+D"`, `"Ctrl+Z"`, `"Alt+/"`, `"ArrowRight"`. Chrome-reserved browser shortcuts never reach the page — no task below needs any.
+  - `browser_click(element_id, button="right", double=true)` — right-click opens Slides' own context menu (works on filmstrip thumbnails).
+  - `browser_snapshot()` traverses same-origin iframes: elements inside frames are marked `iframe="true"`, and contenteditable / role=textbox elements are captured even when tiny or clipped. Slides' live text editor is expected to surface this way.
+
+  ### STATE RECOGNITION (check on the FIRST snapshot of every session)
+  - **Login wall**: URL on `accounts.google.com`, or a sign-in / "Choose an account" form → you cannot log in for the user. Tell the user to log in to Google in the JARVIS browser, then STOP.
+  - **Loading**: no filmstrip yet → take one more `browser_snapshot()` after a moment. Still absent after 2 tries → report and stop.
+  - **Ready**: the filmstrip (left panel of slide thumbnails, role option/listitem, aria-labels like "Slide 1") is present → proceed.
+  - **View-only / comment-only**: a "View only" or "Comment only" chip near the title, a "Request edit access" button, or no editable title INPUT → you cannot edit. Tell the user you need edit access and STOP (reading slides still works).
+  - **Retry rule**: the same step failing twice in a row (element not found after a fresh snapshot, text not committed, no edit-mode textbox appearing) → STOP and tell the user exactly what failed. Do not loop.
+
+  ### URL PATTERNS (locale-independent — prefer these)
+  - Create new blank deck: `https://docs.google.com/presentation/create`
+  - Slides home / file list: `https://docs.google.com/presentation/u/0/`
+  - Open deck: `https://docs.google.com/presentation/d/{ID}/edit`
+  - Open at a slide: append `#slide=id.{SLIDE_ID}` (first slide is `id.p`)
+
+  ### CORE MECHANICS — the slide canvas is <canvas>
+  Text boxes, shapes, and images ON the slide are not clickable DOM. The filmstrip thumbnails, menu bar, toolbar, dialogs, and notes pane ARE. All in-slide text editing uses one keyboard triad — stated once, used everywhere:
+  **Tab selects the next placeholder → Enter enters text edit mode → Escape commits and exits.**
+
+  **EDIT-AND-VERIFY pattern (every slide text edit)**
+  1. `browser_click([thumbnail_id])` — select the slide in the filmstrip.
+  2. `browser_press_key("Tab")` — focus moves into the slide and selects the FIRST placeholder (usually the title). Each further Tab selects the next placeholder (body, subtitle, …).
+  3. `browser_press_key("Enter")` — enter text edit mode on the selected placeholder.
+  4. `browser_snapshot()` — a focused contenteditable/textbox element must now be present, likely marked `iframe="true"` [LIVE-VERIFY: the exact element Slides exposes in edit mode has never been captured from a real run]. If none appeared, that is one failure (retry rule).
+     - **Wrong-Tab-count risk**: Tab order is normally title → body, but layouts vary. If the focused element exposes an aria-label/placeholder naming the placeholder ("title", "subtitle", "text") use it to confirm which one you are in [LIVE-VERIFY whether Slides exposes this] — and always confirm placement at step 7.
+  5. `browser_type([editor_id], "Your text")` — REPLACES the placeholder's existing text; use `append=true` to add instead. NEVER `submit=true` here — Enter inside a placeholder is a newline/new bullet, not a commit.
+  6. `browser_press_key("Escape")` — commit and exit edit mode.
+  7. `browser_snapshot()` — VERIFY the new text appears in Page Text (slide text is exposed for accessibility) or in that slide's filmstrip thumbnail label. Thumbnail COUNT alone never verifies a text edit.
+
+  **Element ids** change per snapshot; reuse the editor id within one slide optimistically and re-snapshot only on "element not found". **Locale**: menu/toolbar text is translated — match toolbar buttons by the "(Ctrl+…)" hint in their aria-label (stays English); when a menu label doesn't match, use menu search (below). **Auto-save**: no Save button exists.
+
+  ### TASKS
+  **Create a new deck** — `browser_navigate("https://docs.google.com/presentation/create")` → snapshot → verify: filmstrip shows 1 slide, title INPUT reads "Untitled presentation".
+
+  **Open a deck** — with an ID: navigate `https://docs.google.com/presentation/d/{ID}/edit`. Otherwise navigate to Slides home → snapshot → click the file by name, or type the name into the search box (`submit=true`) → snapshot → click the result.
+
+  **Rename the deck** — snapshot → find the title INPUT (top-left, holds the current deck name) → `browser_type([title_id], "New name", submit=true)`. browser_type replaces the old name by itself — no select-all step.
+
+  **Add a slide** — `browser_press_key("Ctrl+M")` (inserts after the current slide and selects it). Fallback: Insert menu → "New slide". Verify: snapshot → filmstrip count +1.
+
+  **Edit a slide's title/body** — EDIT-AND-VERIFY pattern. Multi-bullet body: `browser_type([editor_id], "Bullet one")`, then for EACH further bullet `browser_press_key("Enter")` + `browser_type([editor_id], "Next bullet", append=true)` — append is REQUIRED or the call wipes the earlier bullets.
+
+  **Duplicate a slide** — click its thumbnail → `browser_press_key("Ctrl+D")`. Fallback: `browser_click([thumbnail_id], button="right")` → snapshot → click "Duplicate slide" [LIVE-VERIFY exact label]. Verify: count +1 AND the new thumbnail carries the same title text.
+
+  **Delete a slide** — click its thumbnail → `browser_press_key("Delete")`. Verify: snapshot → filmstrip count -1 AND that slide's title text no longer appears in the filmstrip/Page Text.
+
+  **Reorder slides** — `browser_click([thumbnail_id], button="right")` → snapshot → click "Move slide up" / "Move slide down" [LIVE-VERIFY exact labels]; or Slide menu → Move slide. Do NOT attempt drag. Verify the new order in a fresh snapshot.
+
+  **Speaker notes** — select the slide → click the notes pane below the canvas ("Click to add speaker notes") [LIVE-VERIFY: expected to be a DOM contenteditable in the snapshot] → `browser_type([notes_id], "note text")` (`append=true` to keep existing notes) → `browser_press_key("Escape")` → verify the note text in a fresh snapshot's Page Text.
+
+  **Insert an image by URL** — Insert menu → "Image" → "By URL" [LIVE-VERIFY submenu labels] → snapshot → type the image URL into the dialog input (`submit=true`) → snapshot → verify the image is now the selected object on the slide.
+
+  **Insert an image from a local file** — Insert menu → "Image": the "Upload from computer" item opens a NATIVE OS picker that cannot be driven — do not try to click through it. Instead call `browser_upload_file("/absolute/path/to/image.png")` right after opening the dialog; it sets the page's file input directly [LIVE-VERIFY: that Slides exposes a DOM file input this can target].
+
+  **Change slide layout** — select the slide → Slide menu → "Apply layout" → snapshot → click the layout by name in the picker. (A toolbar "Layout" button works too when present.)
+
+  **Present** — click the "Slideshow" button (top-right) [LIVE-VERIFY exact aria-label]. Verify: the URL switches to a `/present` view or a fullscreen presentation container replaces the editor [LIVE-VERIFY the marker]. Navigate with `browser_press_key("ArrowRight")` / `"ArrowLeft"`; exit with `browser_press_key("Escape")`.
+
+  **Read / summarize the deck** — click each thumbnail in turn → snapshot → read that slide's text from Page Text. The filmstrip gives the total slide count.
+
+  **Undo / Redo** — `browser_press_key("Ctrl+Z")` / `browser_press_key("Ctrl+Y")`.
+
+  **Menu search (universal fallback)** — `browser_press_key("Alt+/")` → snapshot → type the command name ("apply layout", "insert image") into the search box → snapshot → click the matching entry. Works in every locale.
+
+  ### RULES
+  1. Only the ALLOWED tools. Never click the canvas expecting slide text boxes in the DOM — all in-slide editing goes through the Tab/Enter/Escape triad.
+  2. Never `submit=true` inside a slide placeholder or the notes pane (Enter = newline/bullet); commit with Escape. The deck-title INPUT is the one place `submit=true` is correct.
+  3. Verify CONTENT, not just counts: every text edit is confirmed via Page Text/thumbnail text; add/duplicate/delete confirm count AND the affected slide's text.
+  4. Match elements by role/aria-label/"(Ctrl+…)" hint — never by position for destructive actions. Prefer URL patterns over clicks.
+  5. `browser_type` replaces by default — use `append=true` whenever existing content must survive (extra bullets, existing notes).
+  6. Snapshot once per state change, not per keystroke. Budget ≈12 calls per slide edited; if the retry rule triggers, stop and report.

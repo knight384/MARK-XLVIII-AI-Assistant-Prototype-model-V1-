@@ -1,0 +1,469 @@
+name: Sidecar Release
+
+# Builds and publishes the sidecar to npm, versioned independently of the brain
+# from sidecar/VERSION. Distributed via npm only — no sidecar-v* git tag or
+# GitHub release. Driven two ways:
+#   * Called by the brain's Release Executor (release-exec.yml) so a brain
+#     release also ships the current sidecar (its own version).
+#   * Dispatched manually to ship a sidecar-only release without touching the
+#     brain.
+# Idempotent: if sidecar/VERSION is already on npm it stops as a no-op success
+# instead of failing — so calling it on every brain release is safe even when
+# the sidecar hasn't changed. Partial publishes self-heal: the per-package
+# "already on npm" guards no-op, and the wrapper (published last) is the gate.
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        description: "Build and validate without publishing"
+        type: boolean
+        default: false
+    outputs:
+      released:
+        description: "true when a new sidecar version was (re)built this run"
+        value: ${{ jobs.resolve.outputs.should_release }}
+      version:
+        description: "the sidecar version (from sidecar/VERSION)"
+        value: ${{ jobs.resolve.outputs.version }}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and validate without publishing"
+        type: boolean
+        default: true
+
+# Least privilege at the workflow level: the jobs that need OIDC declare it
+# themselves — publish-sidecar for npm Trusted Publishing, build-sidecar to
+# federate into Google Cloud KMS for Windows signing.
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25"
+  BUN_VERSION: "latest"
+  SIDECAR_BIN: jarvis
+  DRY_RUN: ${{ inputs.dry_run || false }}
+
+jobs:
+  # ─── Resolve version + idempotency gate ────────────────────────
+  # The whole release is skipped (no-op success) when sidecar/VERSION is already
+  # published, so the brain's release-exec can call this unconditionally.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      should_release: ${{ steps.v.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        run: |
+          set -euo pipefail
+          VERSION="$(cat sidecar/VERSION)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Dry run — building/validating sidecar v${VERSION} without publishing."
+            exit 0
+          fi
+          if npm view "@usejarvis/sidecar@${VERSION}" version >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::@usejarvis/sidecar@${VERSION} is already published — skipping sidecar release (no-op)."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Sidecar v${VERSION} is not yet on npm — releasing."
+          fi
+
+  # ─── Cross-compile Go sidecars (cgo) ───────────────────────────
+  # The sidecar is a cgo program (webview_go, GTK/Cocoa overlays), so it CANNOT
+  # be cross-compiled with CGO_ENABLED=0 from a single runner. Each arch builds
+  # with CGO_ENABLED=1 on a runner/toolchain that can see its native UI SDK.
+  build-sidecar:
+    needs: resolve
+    if: needs.resolve.outputs.should_release == 'true'
+    runs-on: ${{ matrix.runner }}
+    # OIDC, for google-github-actions/auth: Windows signing federates into
+    # Google Cloud KMS with no stored credential at all. Declared here rather
+    # than at the workflow level so no other job can mint a token.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # secrets can't be referenced in step `if:` conditions — surface their
+      # presence as env flags so the signing steps can gate on them.
+      HAVE_APPLE_SIGNING: ${{ secrets.APPLE_CERT_P12 != '' }}
+      # Windows signing is keyless: there is no secret to sentinel on, so the
+      # gate is the keyring variable — nothing can be signed without it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            npm_pkg: linux-x64
+            runner: ubuntu-latest
+            setup: linux
+          - goos: linux
+            goarch: arm64
+            npm_pkg: linux-arm64
+            runner: ubuntu-24.04-arm
+            setup: linux
+          - goos: windows
+            goarch: amd64
+            npm_pkg: win32-x64
+            runner: ubuntu-latest
+            setup: windows-cross
+            ext: .exe
+          - goos: darwin
+            goarch: arm64
+            npm_pkg: darwin-arm64
+            runner: macos-latest
+            setup: darwin
+          - goos: darwin
+            goarch: amd64
+            npm_pkg: darwin-x64
+            runner: macos-latest
+            setup: darwin
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          # Track sidecar/go.mod as the single source of the Go version.
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+
+      # Linux native (amd64 + arm64): WebKitGTK 4.1 + GTK3. webview_go pins the
+      # pkg-config name `webkit2gtk-4.0`, so alias the 4.1 .pc files. malgo needs
+      # no audio dev headers (it dlopens the backend at runtime).
+      - name: Install Linux UI libraries
+        if: matrix.setup == 'linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev pkg-config build-essential
+          for d in /usr/lib/*/pkgconfig; do
+            [ -f "$d/webkit2gtk-4.1.pc" ] && sudo ln -sf "$d/webkit2gtk-4.1.pc" "$d/webkit2gtk-4.0.pc" || true
+            [ -f "$d/javascriptcoregtk-4.1.pc" ] && sudo ln -sf "$d/javascriptcoregtk-4.1.pc" "$d/javascriptcoregtk-4.0.pc" || true
+          done
+
+      # Windows cross-compile from Linux via mingw-w64 + the bundled EventToken.h
+      # shim (the one WebView2 SDK header mingw lacks). Same recipe as
+      # verify-windows.sh — no Windows runner needed.
+      - name: Install mingw-w64 (Windows cross)
+        if: matrix.setup == 'windows-cross'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # osslsigncode: post-sign verification inside sign-windows.sh
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 osslsigncode
+
+      - name: Build sidecar (${{ matrix.goos }}/${{ matrix.goarch }})
+        working-directory: sidecar
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          LDFLAGS="-s -w -X main.sidecarVersion=$(cat VERSION)"
+          case "${{ matrix.setup }}" in
+            windows-cross)
+              export CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
+              export CGO_CFLAGS="-I$(pwd)/include" CGO_CXXFLAGS="-I$(pwd)/include"
+              # GUI subsystem: no console window when the .exe is launched.
+              LDFLAGS="$LDFLAGS -H windowsgui"
+              ;;
+            darwin)
+              if [ "${{ matrix.goarch }}" = "amd64" ]; then TARGET=x86_64-apple-macos11; else TARGET=arm64-apple-macos11; fi
+              export CC="clang -target $TARGET" CXX="clang++ -target $TARGET"
+              ;;
+          esac
+          go build -ldflags "$LDFLAGS" \
+            -o "${{ env.SIDECAR_BIN }}${{ matrix.ext || '' }}" .
+
+      # Windows signing needs BOTH the KMS keyring variable AND the issued
+      # certificate chain in the repo. They arrive at DIFFERENT times: the
+      # Sectigo CSR is generated FROM the KMS key, so the keyring necessarily
+      # exists days before the certificate does. Gating on the variable alone
+      # would turn that window into hard release failures instead of unsigned
+      # builds — so check the chain file too.
+      - name: Windows signing readiness
+        id: winsign
+        if: matrix.setup == 'windows-cross'
+        run: |
+          set -euo pipefail
+          if [ -z "${{ vars.GCP_KMS_KEYRING }}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Windows signing is not configured (GCP_KMS_KEYRING unset) — shipping an unsigned binary (SmartScreen will warn users)."
+          elif [ ! -f sidecar/packaging/windows/codesign-chain.pem ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GCP_KMS_KEYRING is set but sidecar/packaging/windows/codesign-chain.pem is missing — the certificate has not been issued/committed yet, so this binary ships UNSIGNED."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ─── Windows: Authenticode signature (Cloud KMS + Sectigo) ────────
+      # Keyless: OIDC → Workload Identity Federation → a short-lived access
+      # token for the Cloud HSM key. Nothing is stored in this repository, so
+      # there is no signing secret to leak or rotate.
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        if: matrix.setup == 'windows-cross' && steps.winsign.outputs.ready == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SIGNING_SERVICE_ACCOUNT }}
+          token_format: "access_token"
+
+      # scripts/sign-windows.sh is the single signing code path, shared with
+      # installer-release.yml and runnable locally (see its header), so a local
+      # test exercises exactly what CI runs. Gated on GCP_KMS_KEYRING: absent
+      # (forks, pre-onboarding) the .exe ships unsigned, exactly as before.
+      - name: Sign Windows binary (Cloud KMS)
+        if: matrix.setup == 'windows-cross' && steps.winsign.outputs.ready == 'true'
+        working-directory: sidecar
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+          GCP_KMS_KEYRING: ${{ vars.GCP_KMS_KEYRING }}
+          GCP_KMS_KEY_ALIAS: ${{ vars.GCP_KMS_KEY_ALIAS }}
+          # Asserted post-sign: the binary must carry OUR publisher, the same
+          # identity the installer pins at runtime.
+          SIGNING_PUBLISHER_CN: ${{ vars.SIGNING_PUBLISHER_CN }}
+          # Sectigo's roots are publicly trusted, so demand the FULL
+          # verification (osslsigncode exit 0). This is the script's default
+          # too; stated here so the release posture is visible at the workflow.
+          SIGN_REQUIRE_TRUSTED_CHAIN: "1"
+        run: |
+          if [ -z "${SIGNING_PUBLISHER_CN}" ]; then
+            echo "::warning::SIGNING_PUBLISHER_CN repo variable is unset — the signature's publisher will not be asserted."
+          fi
+          scripts/sign-windows.sh "${{ env.SIDECAR_BIN }}.exe"
+
+
+      # ─── macOS: assemble Jarvis.app, sign, notarize ────────────────
+      # Notifications (UNUserNotification) and stable TCC grants require a
+      # bundle, so darwin ships Jarvis.app — not a bare binary. The Vision OCR
+      # helper is built here (universal) and sealed inside the bundle.
+      - name: Build universal ocr-helper
+        if: matrix.setup == 'darwin'
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          swiftc -O -target arm64-apple-macos11  -o /tmp/ocr-helper-arm64 helpers/ocr-helper.swift
+          swiftc -O -target x86_64-apple-macos11 -o /tmp/ocr-helper-amd64 helpers/ocr-helper.swift
+          mkdir -p helpers
+          lipo -create -output helpers/ocr-helper /tmp/ocr-helper-arm64 /tmp/ocr-helper-amd64
+          lipo -info helpers/ocr-helper
+
+      - name: Assemble Jarvis.app
+        if: matrix.setup == 'darwin'
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          packaging/macos/make-icns.sh
+          make app-macos BIN=./${{ env.SIDECAR_BIN }} APP_DIR=dist/Jarvis.app
+
+      # Gated on the Apple credentials: absent (forks, pre-onboarding) the
+      # bundle ships unsigned, exactly as before. Signing is inside-out
+      # (nested Mach-Os first, never --deep) with the hardened runtime, then
+      # notarized and stapled so Gatekeeper approves offline.
+      - name: Sign and notarize (Developer ID)
+        if: matrix.setup == 'darwin' && env.HAVE_APPLE_SIGNING == 'true'
+        working-directory: sidecar
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          for v in APPLE_CERT_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_API_KEY_P8; do
+            [ -n "${!v}" ] || { echo "::error::secret $v is required when APPLE_CERT_P12 is set"; exit 1; }
+          done
+
+          # Ephemeral keychain holding the Developer ID certificate
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          printf '%s' "$APPLE_CERT_P12" | base64 -d > /tmp/cert.p12
+          security import /tmp/cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          rm /tmp/cert.p12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain >/dev/null
+          security list-keychains -d user -s build.keychain login.keychain
+          IDENTITY="$(security find-identity -v -p codesigning build.keychain | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          test -n "$IDENTITY" || { echo "::error::no 'Developer ID Application' identity in APPLE_CERT_P12"; exit 1; }
+          echo "Signing as: $IDENTITY"
+
+          if [ -f dist/Jarvis.app/Contents/MacOS/ocr-helper ]; then
+            codesign --force --options runtime --timestamp \
+              --sign "$IDENTITY" dist/Jarvis.app/Contents/MacOS/ocr-helper
+          fi
+          codesign --force --options runtime --timestamp \
+            --entitlements packaging/macos/entitlements.plist \
+            --sign "$IDENTITY" dist/Jarvis.app
+          codesign --verify --strict --verbose=2 dist/Jarvis.app
+
+          # trap, not a trailing rm: `set -e` means any failure between here
+          # and the rm would leave the private key on the runner.
+          trap 'rm -f /tmp/asc_key.p8' EXIT
+          (umask 077; printf '%s' "$ASC_API_KEY_P8" > /tmp/asc_key.p8)
+          ditto -c -k --keepParent dist/Jarvis.app /tmp/Jarvis.zip
+          # notarytool's exit code is not reliable on an Invalid verdict —
+          # check the JSON status and dump the notarization log on failure
+          # (the submission id is unrecoverable once this runner is gone).
+          SUBMIT_JSON="$(xcrun notarytool submit /tmp/Jarvis.zip \
+            --key /tmp/asc_key.p8 --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+            --wait --timeout 30m --output-format json)" || true
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID="$(echo "$SUBMIT_JSON" | jq -r '.id // empty')"
+          NOTARY_STATUS="$(echo "$SUBMIT_JSON" | jq -r '.status // empty')"
+          if [ "$NOTARY_STATUS" != "Accepted" ]; then
+            echo "::error::notarization failed (status: ${NOTARY_STATUS:-unknown})"
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --key /tmp/asc_key.p8 --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            fi
+            exit 1
+          fi
+          xcrun stapler staple dist/Jarvis.app
+          spctl --assess --type execute -vv dist/Jarvis.app
+
+      - name: Warn — unsigned macOS build
+        if: matrix.setup == 'darwin' && env.HAVE_APPLE_SIGNING != 'true'
+        run: echo "::warning::Apple signing credentials not configured — shipping an unsigned Jarvis.app (Gatekeeper will block it on other machines; notifications unreliable)."
+
+      # tar the bundle before upload — upload-artifact strips exec bits and
+      # symlinks, which would corrupt the signed bundle.
+      - name: Package Jarvis.app
+        if: matrix.setup == 'darwin'
+        working-directory: sidecar
+        # COPYFILE_DISABLE + --no-mac-metadata: keep bsdtar from archiving
+        # xattrs as AppleDouble (._*) entries — GNU tar on the publish runner
+        # would extract them as literal files inside the bundle and break the
+        # codesign seal.
+        run: COPYFILE_DISABLE=1 tar --no-mac-metadata -C dist -czf jarvis-app.tar.gz Jarvis.app
+
+      - name: Upload bundle (darwin)
+        if: matrix.setup == 'darwin'
+        uses: actions/upload-artifact@v5
+        with:
+          name: sidecar-${{ matrix.npm_pkg }}
+          path: sidecar/jarvis-app.tar.gz
+
+      - name: Upload binary
+        if: matrix.setup != 'darwin'
+        uses: actions/upload-artifact@v5
+        with:
+          name: sidecar-${{ matrix.npm_pkg }}
+          path: sidecar/${{ env.SIDECAR_BIN }}${{ matrix.ext || '' }}
+
+  # ─── Publish sidecar packages to npm ───────────────────────────
+  publish-sidecar:
+    needs: [resolve, build-sidecar]
+    if: needs.resolve.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports Trusted Publishing
+        run: npm install -g npm@latest
+
+      - name: Download all sidecar binaries
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          pattern: sidecar-*
+
+      - name: Resolve version
+        id: version
+        run: echo "VERSION=${{ needs.resolve.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare platform packages
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            pkg_dir="sidecar/npm/${platform}"
+            mkdir -p "${pkg_dir}/bin"
+
+            case "${platform}" in
+              darwin-*)
+                # The darwin artifact is a tarred Jarvis.app (signed + notarized
+                # when CI has the Apple credentials) with ocr-helper sealed
+                # inside; the launcher prefers bin/Jarvis.app/Contents/MacOS/jarvis.
+                # tar preserves exec bits and the stapled notarization ticket.
+                tar -xzf "artifacts/sidecar-${platform}/jarvis-app.tar.gz" -C "${pkg_dir}/bin/"
+                ;;
+              *)
+                cp "artifacts/sidecar-${platform}/"* "${pkg_dir}/bin/"
+                chmod +x "${pkg_dir}/bin/"*
+                ;;
+            esac
+
+            # Update version
+            cd "${pkg_dir}"
+            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+            cd "$GITHUB_WORKSPACE"
+          done
+
+          # Update wrapper package version and dependency versions
+          cd sidecar/npm/jarvis-sidecar
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+
+          # Update optionalDependencies versions
+          for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            sed -i "s|\"@usejarvis/sidecar-${platform}\": \".*\"|\"@usejarvis/sidecar-${platform}\": \"${VERSION}\"|" package.json
+          done
+
+      - name: Publish platform packages
+        run: |
+          FLAGS=""
+          if [ "$DRY_RUN" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          if echo "${{ steps.version.outputs.VERSION }}" | grep -q '-'; then FLAGS="$FLAGS --tag next"; fi
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            pkg="@usejarvis/sidecar-${platform}"
+            echo "Publishing ${pkg}@${VERSION}... ${FLAGS}"
+            cd "sidecar/npm/${platform}"
+            if ! npm publish --access public $FLAGS; then
+              if [ "$DRY_RUN" != "true" ] && npm view "${pkg}@${VERSION}" version >/dev/null 2>&1; then
+                echo "${pkg}@${VERSION} is already on npm; treating as success."
+              else
+                exit 1
+              fi
+            fi
+            cd "$GITHUB_WORKSPACE"
+          done
+
+      - name: Publish wrapper package
+        run: |
+          FLAGS=""
+          if [ "$DRY_RUN" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          if echo "${{ steps.version.outputs.VERSION }}" | grep -q '-'; then FLAGS="$FLAGS --tag next"; fi
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          pkg="@usejarvis/sidecar"
+
+          cd sidecar/npm/jarvis-sidecar
+          if ! npm publish --access public $FLAGS; then
+            if [ "$DRY_RUN" != "true" ] && npm view "${pkg}@${VERSION}" version >/dev/null 2>&1; then
+              echo "${pkg}@${VERSION} is already on npm; treating as success."
+            else
+              exit 1
+            fi
+          fi

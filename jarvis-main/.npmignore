@@ -1,0 +1,68 @@
+# NOTE: this file currently has NO EFFECT. `package.json` has a `files` field,
+# and while it does, both npm and bun ignore .npmignore entirely -- every rule
+# below is already contradicted by the real tarball, which ships 196 *.test.ts
+# files, 28 *.md files and ui/public/ort/. `files` is the sole allowlist.
+#
+# Packaging is therefore fixed in package.json, never here. What ships is
+# asserted by scripts/check-package-files.ts, which runs a real packer rather
+# than modelling these rules.
+#
+# Version control
+.git/
+.github/
+.claude/
+
+# Dependencies (users install their own)
+node_modules/
+
+# Test files
+**/*.test.ts
+**/test.ts
+**/test-*.ts
+**/test-*.yaml
+**/__tests__/
+
+# Dev-only files
+examples/
+scripts/
+# Exceptions: the two scripts that SHIP. Both currently INERT, like every rule
+# in this file -- see the header. They are kept correct (and `ensure-bun` had
+# the wrong extension until 2026-09) so that removing `files` restores a sane
+# package instead of one missing its entry points.
+!scripts/ensure-bun.cjs
+!scripts/build-shared-runtime.ts
+VISION.md
+CLAUDE.md
+**/*.md
+!README.md
+
+# Internal READMEs that document source-tree directories -- shipped users
+# don't need them. Listed explicitly because `!README.md` above re-includes
+# every README in the tree.
+src/workflows/pieces-library/README.md
+
+# UI source (only dist + public needed)
+ui/src/
+ui/index.html
+ui/tailwind.config.ts
+ui/tsconfig.json
+
+# Build artifacts
+*.heapsnapshot
+*.log
+trace.json*
+.env
+.env.*
+
+# Sidecar binaries (Windows-only, users build locally)
+sidecar/
+
+# Heavy WASM/ONNX assets (copied from node_modules via postinstall)
+ui/public/ort/
+ui/public/openwakeword/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

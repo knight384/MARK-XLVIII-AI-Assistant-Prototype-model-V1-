@@ -1,0 +1,125 @@
+app_name: Google Sheets
+domains:
+  - docs.google.com/spreadsheets
+  - sheets.google.com
+keywords:
+  - spreadsheet
+  - google sheet
+  - gsheet
+  - open my spreadsheet
+  - create a spreadsheet
+  - new spreadsheet
+  - update the spreadsheet
+  - edit the spreadsheet
+  - edit the cell
+  - fill in the cell
+  - write in the cell
+  - check the spreadsheet
+  - read the spreadsheet
+  - what's in cell
+  - what does the spreadsheet say
+  - sum formula
+  - vlookup
+  - pivot table
+  - create a filter
+  - format the cells
+  - bold the cells
+  - rename the sheet
+  - add a sheet
+description: Google Sheets — read and write cells via the Name Box and formula bar, enter formulas, format, sort, filter, find/replace, manage rows/columns and sheet tabs.
+version: 3
+instructions: |
+  URL: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit#gid={SHEET_ID}
+
+  ### TOOLS
+  ALLOWED: browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_hover, browser_scroll.
+  BANNED: browser_evaluate, browser_screenshot.
+  - `browser_type(element_id, text, submit?)` — REPLACES the element's content by default (no select-all needed). `submit=true` presses Enter after typing; that is the only key it can press.
+  - `browser_press_key(key)` — sends a real key event to the page: `"Tab"`, `"Enter"`, `"Escape"`, `"Ctrl+B"`, `"Ctrl+H"`, `"Shift+Space"`, `"Shift+F11"`, `"Alt+/"`. Use this for every keystroke that isn't the Enter from `submit=true`.
+  - `browser_click(element_id, double=true)` — double-click (needed to rename a sheet tab).
+
+  ### STATE RECOGNITION (check on the FIRST snapshot of every session)
+  - **Login wall**: URL is on `accounts.google.com`, or the page shows a sign-in / "Choose an account" form → you cannot log in for the user. Tell the user to log in to Google in the JARVIS browser, then STOP.
+  - **Loading**: no Name Box and no grid yet → take one more `browser_snapshot()` after a moment. If still loading after 2 tries, report it and stop.
+  - **Ready**: an INPUT whose text is a cell reference like "A1" (the Name Box) is present → proceed.
+  - **View-only**: a "View only" chip near the title, or a "Request edit access" button, or no editable formula bar → you cannot write. Tell the user you need edit access to this spreadsheet and STOP (reading cells still works).
+  - **Retry rule**: if the same step fails twice in a row (element not found after a fresh snapshot, value not committed, dialog not appearing), STOP and tell the user exactly what failed. Do not loop.
+
+  ### URL PATTERNS (locale-independent — prefer these)
+  - Open spreadsheet: `https://docs.google.com/spreadsheets/d/{ID}/edit#gid={SHEET_ID}`
+  - Open at a cell/range: append `&range=A1` or `&range=B5:C10`
+  - Create new blank: `https://docs.google.com/spreadsheets/create`
+  - Sheets home: `https://docs.google.com/spreadsheets/u/0/`
+
+  ### CORE MECHANICS — the grid is <canvas>
+  Cells NEVER appear in the snapshot and CANNOT be clicked. All cell work goes through three elements (find them in every snapshot):
+  1. **Name Box** — an INPUT whose text is a cell ref like "A1" or "B5". Navigation: `browser_click([id])`, then `browser_type([id], "C3", submit=true)`. Also accepts ranges ("A1:B10") to select them.
+  2. **Formula bar** — a contenteditable INPUT showing the current cell's raw value/formula. READ cell values here; never scrape the canvas text.
+  3. **Inline editor** — the focused contenteditable element you TYPE cell values into. It may be the same element as the formula bar.
+
+  **Commit rule (once, applies everywhere)**: every `browser_type` that enters cell data must be committed — either `submit=true` (Enter: commits and moves DOWN) or a following `browser_press_key("Tab")` (commits and moves RIGHT). Uncommitted text sits in the edit buffer and is lost. After tabbing across a row, `browser_press_key("Enter")` commits the last cell and returns the cursor to the row's first column, one row down.
+
+  **Element ids**: ids come from the last snapshot and can change. The inline editor usually keeps its id across cell moves — reuse it optimistically; only take a new snapshot when a call fails with "element not found".
+
+  **Empty cells**: to leave a cell empty, press Tab past it (or navigate past it with the Name Box). NEVER type filler like a space — a cell containing `" "` is not empty and breaks ISBLANK, COUNTA, charts, and sorting.
+
+  ### CORE PATTERNS
+  - **A — Navigate to a cell**: snapshot → `browser_click([name_box_id])` → `browser_type([name_box_id], "B5", submit=true)`.
+  - **B — Read a cell**: Pattern A, then snapshot and read the formula bar's text. That IS the cell value.
+  - **C — Write one cell**: Pattern A → snapshot to find the inline editor → `browser_type([editor_id], "Value", submit=true)`.
+  - **D — Write a COLUMN** (most efficient, 1 call/cell): navigate to the top cell, find the editor once, then repeat `browser_type([editor_id], "value", submit=true)` — each Enter moves down one cell.
+  - **E — Write a ROW** (2 calls/cell): `browser_type([editor_id], "value")` (no submit) → `browser_press_key("Tab")`. End the row with `browser_press_key("Enter")` to drop to the next row's first column.
+  - Don't snapshot after every write: write the batch, then snapshot once and spot-check 2-3 cells via the formula bar.
+
+  ### EXAMPLE — build a small table (headers + rows)
+  Goal: headers Name/Role/Email in A1:C1, then two data rows.
+  1. `browser_snapshot()` → Name Box is [12], say.
+  2. `browser_click(12)` → `browser_type(12, "A1", submit=true)` → cursor at A1.
+  3. `browser_snapshot()` → inline editor is [55], say.
+  4. `browser_type(55, "Name")` → `browser_press_key("Tab")` → A1 committed, at B1.
+  5. `browser_type(55, "Role")` → `browser_press_key("Tab")` → at C1.
+  6. `browser_type(55, "Email")` → `browser_press_key("Enter")` → row done, cursor at A2.
+  7. Repeat steps 4-6 for each data row (skip an empty cell by pressing Tab without typing).
+  8. Verify: Name Box → "A1", snapshot, formula bar shows "Name".
+  For tall narrow data, Pattern D per column (Name Box jump to the top of each column) is cheaper. Budget: a table of N cells should take about N + 10 calls.
+
+  ### TASKS
+  **Read a specific cell** — Pattern B. 4 calls.
+
+  **Write a value / formula** — Pattern C. Formulas start with `=` (`=SUM(A1:A10)`, `=VLOOKUP(...)`); to enter literal text that starts with `=`, prefix `'`.
+
+  **Format cells (bold/italic/underline)** — select the range via the Name Box ("A1:B1", submit=true), then `browser_press_key("Ctrl+B")` / `"Ctrl+I"` / `"Ctrl+U"`. Fallback: click the toolbar button whose aria-label contains the shortcut hint, e.g. "(Ctrl+B)" — those hints are stable across locales. Number/currency/date formats: Format menu → Number → pick the entry.
+
+  **Insert rows/columns (menu path)** — navigate to a cell in the target row/column, click the **Insert** menu in the menu bar (normal clickable DOM), snapshot, then click "Rows" → "Insert 1 row above" (or "Columns" → "Insert 1 column left"). Menu labels are locale-translated: if labels don't match, use menu search (below) instead.
+
+  **Delete rows/columns** — select the row with `browser_press_key("Shift+Space")` (column: `"Ctrl+Space"`), then **Edit** menu → snapshot → click the entry named like "Delete row 5" / "Delete column B" (it names the current selection).
+
+  **Sort** — navigate to a cell in the range, **Data** menu → snapshot → click "Sort sheet"/"Sort range" and the A→Z or Z→A option.
+
+  **Create a filter** — select the range via the Name Box, **Data** menu → click "Create a filter".
+
+  **Find and replace** — `browser_press_key("Ctrl+H")` (Sheets intercepts it and opens its own dialog) or Edit menu → "Find and replace". Snapshot: the dialog has an input labeled "Find" and one labeled "Replace with"; type into each. Then click the button by its LABEL — "Replace all" to change every match, "Replace" to change one at a time — never by position in the dialog. Click "Done" to close. VERIFY which happened: navigate to a cell you expect changed and read the formula bar; if you used "Replace" (single) some matches may remain — check a second expected cell before reporting "all replaced".
+
+  **Add a sheet tab** — `browser_press_key("Shift+F11")`, or click the "Add Sheet" (+) button in the bottom tab strip. **Switch tabs** — click the tab by name in the bottom strip.
+
+  **Rename a sheet TAB** (the tab at the bottom) — `browser_click([tab_id], double=true)` on the tab in the bottom strip → snapshot → the tab name becomes an editable field containing the current name → `browser_type([field_id], "New tab name", submit=true)`.
+
+  **Rename the DOCUMENT** (the file's title at the top — not a tab) — snapshot → find the title INPUT showing the current file name → `browser_type([title_id], "New name", submit=true)` (browser_type replaces the old name by itself).
+
+  **Create a new spreadsheet** — `browser_navigate("https://docs.google.com/spreadsheets/create")`.
+
+  **Open an existing spreadsheet** — `browser_navigate("https://docs.google.com/spreadsheets/u/0/")` → snapshot → click the file by name.
+
+  **Undo / Redo** — `browser_press_key("Ctrl+Z")` / `browser_press_key("Ctrl+Y")`.
+
+  **Menu search (universal fallback)** — `browser_press_key("Alt+/")` opens Sheets' menu search; snapshot, type the command name ("sort", "filter", "insert row") into the search box, snapshot, click the matching entry. Works in every locale — use it whenever a menu label doesn't match the English names above.
+
+  ### RULES
+  1. Only the ALLOWED tools above. Never click on the canvas grid; go through the Name Box.
+  2. Read cells only from the formula bar; navigate only via the Name Box or URL `range=`.
+  3. Commit every cell write (submit=true or Tab/Enter via browser_press_key) — see the commit rule.
+  4. Never write filler characters into cells that should stay empty.
+  5. Match dialog/menu items by label or aria shortcut hint, never by position; prefer URL patterns and keyboard over translated text.
+  6. Reuse element ids optimistically; snapshot only on failure or after a state change, once per write batch to verify.
+  7. Auto-save is on — never look for a Save button.
+  8. Stop conditions: login wall, view-only, or the same step failing twice → report to the user instead of retrying further.

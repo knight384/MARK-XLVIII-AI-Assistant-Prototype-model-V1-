@@ -1,0 +1,42 @@
+/* Usage room — Brand Book III / Monochrome Lab. One ledger, six lenses.
+   Composes the room kit (rk-stats, rk-row, rk-select, rk-filterchip,
+   rk-check); only the filter bar layout + the share bar are room-specific. */
+
+.rk-usage { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+
+/* ── filter bar ── */
+.rk-usage__bar { border-bottom: 1px solid var(--rule); background: var(--panel2); flex-shrink: 0; }
+.rk-usage__row { display: flex; align-items: center; gap: 8px; padding: 9px 16px; flex-wrap: wrap; }
+.rk-usage__row + .rk-usage__row { border-top: 1px solid var(--rule2); }
+.rk-usage__title { font-weight: 700; font-size: 13px; color: var(--ink); }
+.rk-usage__sub { font-family: var(--mono); font-size: 8.5px; color: var(--ink3); }
+.rk-usage__lab { font-family: var(--mono); font-size: 8px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink3); }
+.rk-usage__period { font-family: var(--mono); font-size: 9px; color: var(--ink3); margin-left: 4px; }
+.rk-usage__refresh { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 9px; text-transform: uppercase; border: 1px solid var(--rule); border-radius: var(--corner-sm); padding: 5px 10px; color: var(--ink2); background: var(--raise); cursor: pointer; }
+.rk-usage__refresh:hover { color: var(--ink); border-color: var(--ink3); }
+.rk-usage__date { font-family: var(--mono); font-size: 11px; color: var(--ink); border: 1px solid var(--rule); border-radius: var(--corner-sm); padding: 5px 9px; background: var(--raise); }
+
+/* ── totals strip: highlight Total, amber Errors ── */
+.rk-usage .rk-stats__cell--hi { background: var(--panel); }
+.rk-usage .rk-stats__cell--hi .rk-stats__n { color: var(--ink); }
+
+/* ── main / tables ── */
+.rk-usage__main { flex: 1; overflow: auto; min-height: 0; }
+.rk-usage__empty { padding: 26px 16px; font-size: 12.5px; color: var(--ink3); text-align: center; }
+.rk-usage__hint { padding: 9px 16px; font-family: var(--mono); font-size: 10px; color: var(--ink3); border-bottom: 1px solid var(--rule2); background: var(--panel2); }
+
+/* share bar under each group key (usage §02 — new in the book) */
+.rk-usage__key { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rk-usage__key-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-usage__key-name b { font-weight: 600; }
+.rk-usage__share { height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--ink) 28%, transparent); }
+
+.rk-usage__err { color: var(--hold-tx); }
+.rk-usage__raw-mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── hosted budget strip: the two windows the proxy enforces ── */
+.rk-usage__budget { border-bottom: 1px solid var(--rule); background: var(--panel2); flex-shrink: 0; }
+.rk-usage__meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px 28px; padding: 11px 16px; }
+.rk-usage__banner { padding: 9px 16px; font-size: 11.5px; line-height: 1.45; border-bottom: 1px solid var(--rule2); }
+.rk-usage__banner--hold { color: var(--hold-tx); background: color-mix(in srgb, var(--hold) 10%, transparent); }
+.rk-usage__banner--fail { color: var(--listen-tx); background: color-mix(in srgb, var(--listen) 10%, transparent); }

@@ -1,0 +1,107 @@
+app_name: Google Docs
+domains:
+  - docs.google.com/document
+keywords:
+  - google doc
+  - google document
+  - create a document
+  - create a doc
+  - make a document
+  - new doc
+  - blank doc
+  - write a document
+  - write a doc
+  - draft a document
+  - draft a doc
+  - start a doc
+  - open my doc
+  - open the doc
+  - open the document
+  - edit the doc
+  - edit the document
+  - append to the doc
+  - add to the doc
+  - find and replace in the doc
+  - insert a bullet list
+  - insert a numbered list
+  - share the doc
+  - share the document
+  - rename the doc
+  - rename the document
+description: Google Docs — create, open and rename documents, type or append text, headings and lists, bold/italic, find and replace, insert links, share, word count. Cannot read the document body (canvas-rendered).
+version: 2
+instructions: |
+  URL: https://docs.google.com/document/d/{DOCUMENT_ID}/edit
+
+  ### TOOLS
+  ALLOWED: browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_hover, browser_scroll.
+  BANNED: browser_evaluate, browser_screenshot.
+  - `browser_type(element_id, text, submit?, append?)` — REPLACES the element's content by default. `append=true` preserves existing content and types at the end. `submit=true` presses Enter after typing.
+  - `browser_press_key(key)` — sends a real key event to the page. Docs handles its own shortcuts: `"Ctrl+B"`/`"Ctrl+I"`/`"Ctrl+U"`, `"Ctrl+Z"`/`"Ctrl+Y"`, `"Ctrl+Home"`/`"Ctrl+End"`, `"ArrowUp"`/`"ArrowDown"`/`"ArrowLeft"`/`"ArrowRight"`, `"Enter"`, `"Ctrl+Alt+1"`/`"Ctrl+Alt+2"`/`"Ctrl+Alt+3"` (heading 1/2/3), `"Ctrl+Alt+0"` (normal text), `"Ctrl+K"` (link), `"Alt+/"` (menu search).
+
+  ### WHAT THIS SURFACE CANNOT DO — tell the user, don't improvise
+  The document body is rendered on <canvas>. Body text NEVER appears in the snapshot's Page Text, and words/paragraphs are NOT clickable elements.
+  - **Reading or summarizing an existing doc's content is NOT supported.** If asked, say so plainly and stop. The only partial read: the document OUTLINE panel lists headings as DOM elements (open it via the "Show document outline" button in the left margin, or View menu → "Show outline") [LIVE-VERIFY] — offer headings-only structure, never pretend it is the text.
+  - **Comments are NOT supported** (comment anchors are hover-marginalia on the canvas). Tell the user and stop.
+  - **Precise mid-document edits are limited**: you cannot see the text, so you cannot navigate to an arbitrary sentence. Supported: append at the end (Ctrl+End), edit at the very top (Ctrl+Home), and whole-phrase swaps via Find and replace.
+  - **Verification of body writes is WEAK**: the snapshot cannot read the text back. Verify what you can — a new heading appearing in the outline panel, a "Replaced N instances" message in the Find-and-replace dialog [LIVE-VERIFY] — otherwise report "typed without a tool error" and SAY the verification is limited.
+
+  ### STATE RECOGNITION (check on the FIRST snapshot of every session)
+  - **Login wall**: URL on `accounts.google.com`, or a sign-in / "Choose an account" form → you cannot log in for the user. Tell them to log in to Google in the JARVIS browser, then STOP.
+  - **Loading**: no title input and no menu bar yet → snapshot once more. Still loading after 2 tries → report and stop.
+  - **Ready**: the document title INPUT (top-left) and menu bar are present. The typing target is a contenteditable inside a tiny same-origin iframe — it appears in the snapshot marked `iframe="true"` [LIVE-VERIFY against real Docs; if it is absent, click once anywhere in the page body area is NOT allowed — instead report that the editor element did not appear].
+  - **View-only / Suggesting**: a "Request edit access" button, or a mode chip near the toolbar showing "Viewing" or "Suggesting" instead of "Editing" [LIVE-VERIFY] → you cannot (cleanly) edit. Tell the user you need edit access / Editing mode and STOP for any write task.
+  - **Retry rule**: the same step failing twice in a row (element not found after a fresh snapshot, dialog not appearing, key with no visible effect) → STOP and tell the user exactly what failed. Do not loop.
+
+  ### URL PATTERNS (locale-independent — prefer these)
+  - Create new blank doc: `https://docs.google.com/document/create`
+  - Docs home / file picker: `https://docs.google.com/document/u/0/`
+  - Open existing doc: `https://docs.google.com/document/d/{ID}/edit`
+
+  ### CORE MECHANICS — writing into the canvas editor
+  The elements that ARE normal DOM and clickable: title input, menu bar (File/Edit/View/Insert/Format/Tools), toolbar buttons, dialogs (Find and replace, link, word count, Share), the outline panel. Toolbar buttons carry locale-stable shortcut hints in their aria-labels, e.g. "Bold (Ctrl+B)" — match on the "(Ctrl+…)" substring, never on English words alone.
+
+  **The write recipe (ALWAYS this, in this order):**
+  1. Position the cursor with `browser_press_key` — `"Ctrl+End"` (end of doc), `"Ctrl+Home"` (top), arrows for small moves. Never try to click a position in the body.
+  2. Find the editor element in the snapshot: the contenteditable marked `iframe="true"` [LIVE-VERIFY].
+  3. `browser_type(editor_id, "text", append=true)` — **ALWAYS `append=true`** when typing document text. Never plain (replace-mode) browser_type into the editor: whether clearing hits the document itself is unverified, so treat it as destructive [LIVE-VERIFY].
+  4. New paragraph: `browser_press_key("Enter")` between browser_type calls — one call per paragraph, don't embed newlines in the text.
+  5. Formatting toggles apply AT THE CURSOR while typing: `browser_press_key("Ctrl+B")` → type the bold words (append=true) → `"Ctrl+B"` again to turn it off. Same for Ctrl+I / Ctrl+U.
+  6. Paragraph style applies to the CURRENT paragraph: `"Ctrl+Alt+1"`/`"Ctrl+Alt+2"`/`"Ctrl+Alt+3"` before typing the heading text; after Enter, Docs returns to normal text (or press `"Ctrl+Alt+0"`).
+  Element ids come from the last snapshot; the editor id usually persists — take a fresh snapshot only when a call fails with "element not found", and stop after the second failure (retry rule).
+
+  **Menus**: click the menu name in the menu bar (normal DOM), snapshot, click the entry. Menu labels are locale-translated — if labels don't match the English names below, use menu search: `browser_press_key("Alt+/")`, snapshot, type the command into the search box, snapshot, click the match.
+
+  ### TASKS
+  **Create a new blank document** — `browser_navigate("https://docs.google.com/document/create")` → snapshot → ready when the title input shows "Untitled document". Auto-save is on; there is never a Save step.
+
+  **Open an existing document** — by ID: navigate the edit URL. By name: navigate the Docs home URL → snapshot → click the file by its name.
+
+  **Rename the document** — snapshot → find the doc title INPUT (top-left, holds the current name) → `browser_type(title_id, "New Name", submit=true)`. browser_type's replace-by-default is exactly right here; Enter commits. Verify: the page title in the next snapshot shows the new name.
+
+  **Type / append text** — the write recipe at Ctrl+End. For "write a document from scratch": create doc → heading style → heading text → Enter → paragraphs (Enter between). Budget: ~8 calls for a heading + 2 paragraphs. Verify: heading via the outline panel; body text only as "typed without error" (say so).
+
+  **Insert a heading** — cursor at target (end of doc for new content) → `browser_press_key("Ctrl+Alt+2")` (or 1/3) → type the heading (append=true) → Enter. Fallback: the toolbar styles dropdown (the combobox showing "Normal text") → click → snapshot → click "Heading 2" [LIVE-VERIFY]. Verify in the outline panel.
+
+  **Insert a bulleted / numbered list** — cursor in place → Format menu → "Bullets & numbering" → "Bulleted list" / "Numbered list" [LIVE-VERIFY submenu labels], or the toolbar button whose aria-label contains "Bulleted list" / "Numbered list" [LIVE-VERIFY]. Then type items with the write recipe, `"Enter"` between items. Exit the list: press `"Enter"` twice on an empty item, or `"Ctrl+Alt+0"`.
+
+  **Bold / italic / underline while typing** — see write recipe step 5. (Formatting EXISTING text needs a selection you cannot reliably make on canvas — for existing text, only offer Find-and-replace-style rewrites or tell the user it's out of reach.)
+
+  **Find and replace** — Edit menu → "Find and replace" → snapshot: the dialog has an input labeled "Find" and one labeled "Replace with" [LIVE-VERIFY labels] → type into each (replace-mode fine in dialog inputs) → click the button LABELED "Replace all" — by its label, never by its position in the button row → the dialog reports how many instances changed [LIVE-VERIFY] → click Done/close. That count message is your verification; if it doesn't appear, say the outcome is unconfirmed.
+
+  **Insert a link** — cursor in place → `browser_press_key("Ctrl+K")` → snapshot → the link popup has a text field and a "Search or paste a link" field [LIVE-VERIFY] → type anchor text and URL → click Apply.
+
+  **Share the document** — snapshot → click the "Share" button (top-right; label may be localized — match aria-label containing "Share" or its position group near the avatar [LIVE-VERIFY]) → snapshot → type the email into the "Add people, groups…" input → `submit=true` to turn it into a chip → set the role via the dropdown next to the input (Viewer/Commenter/Editor) [LIVE-VERIFY] → click the button labeled "Send" (or "Share"). Verify: the dialog closes or shows an access-updated confirmation [LIVE-VERIFY].
+
+  **Word count** — Tools menu → "Word count" → snapshot → the dialog's counts are normal DOM: read words/characters from it → close (OK button). This works even though the body text doesn't: dialogs are DOM.
+
+  **Undo / Redo** — `browser_press_key("Ctrl+Z")` / `browser_press_key("Ctrl+Y")`. Undo is also your rollback if a write went wrong.
+
+  ### RULES
+  1. Only the ALLOWED tools. Never click in the document body; position the cursor only with browser_press_key.
+  2. ALWAYS `append=true` when typing document text; plain browser_type into the editor is treated as destructive.
+  3. If the task requires reading body text or commenting, tell the user it isn't supported by this surface — do not fake it from the outline or guess.
+  4. Match buttons/menus by aria-label "(Ctrl+…)" hints or labels, never by position on anything destructive; use Alt+/ menu search when labels are localized.
+  5. State every weak verification as weak in your report ("typed without error; Docs' canvas can't be read back").
+  6. Auto-save is on — never look for a Save button.
+  7. Stop conditions: login wall, view-only/suggesting mode on a write task, unsupported request (read/summarize/comment), or the same step failing twice.

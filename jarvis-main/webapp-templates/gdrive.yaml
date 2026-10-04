@@ -1,0 +1,162 @@
+app_name: Google Drive
+domains:
+  - drive.google.com
+keywords:
+  - in my drive
+  - on my drive
+  - to my drive
+  - from my drive
+  - drive folder
+  - drive link
+  - upload to drive
+  - save to drive
+  - shared with me
+  - my recent files
+  - my starred files
+description: Google Drive — navigate My Drive / Shared with me / Recent / Starred / Trash, search with operators, upload/download files, create folders, open/rename/move/trash/restore/share/star files and copy links.
+version: 2
+instructions: |
+  URL: https://drive.google.com/drive/my-drive
+
+  ### RULES (each stated once — follow exactly)
+  1. ONLY use: browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_hover, browser_scroll, browser_upload_file. browser_evaluate and browser_screenshot are BANNED for Drive. Never use desktop or sidecar tools.
+  2. URL navigation beats clicking: every view (My Drive, Shared with me, Recent, Starred, Trash, a specific folder, search results) has a stable URL. Always ask "is there a URL for this?" before clicking.
+  3. Mutations are SELECT → ACT: click the file row ONCE (that selects it, it does not open), snapshot — the selection toolbar (Share, Download, Move, star, Move to trash, "More actions" ⋮) is now visible — then click the action by aria-label.
+  4. UI LANGUAGE: Drive translates button text AND aria-labels to the user's locale. Match toolbar/menu items by aria-label MEANING (expect the locale translation of the English labels below), by role, or by URL — never by exact English text on a non-English UI.
+  5. browser_type REPLACES the field's content by default; pass append: true only when adding to existing content. Rename/search/share inputs want the default replace.
+  6. Keyboard shortcuts are a compact SECONDARY path: with a row selected, browser_press_key with ONE key per call — "r" rename, "s" star toggle, "z" move, "." share, "Delete" move to trash, "Enter" open, "Escape" close dialog/deselect. They fire only when no input or dialog has focus — press "Escape" first if in doubt. Multi-key sequences ("g,l" style) are NOT supported.
+  7. Right-click works: browser_click(row_id, button: "right") → snapshot → the context-menu entries (Open with, Download, Rename, Share, Move, Move to trash, …) are a legitimate alternative to the toolbar.
+  8. Snapshot at checkpoints (after navigate, after selecting, after a dialog opens, after the action). [id]s are 1-based and CHANGE with every snapshot — never reuse ids after the page changed.
+  9. If an element is not found after 2 retry snapshots, tell the user what you were looking for and stop. No workarounds, no browser_evaluate.
+
+  ### State Recognition
+  - **Sign-in wall**: URL contains accounts.google.com, or the page asks to choose an account / log in → tell the user: "Google Drive requires Google sign-in. Please log in manually." Stop.
+  - **Loading**: 0 interactive elements, or no file rows and no empty-state text → wait 2–3s, snapshot again. Max 2 retries, then tell the user.
+  - **Ready**: the search input is present and the file area shows file/folder rows (or an explicit empty-state message).
+  - **Empty folder/view**: page text shows an empty-state hint and there are no file rows — report "nothing here", do not retry.
+
+  ### URL PATTERNS (locale-independent — PREFER these over clicking)
+  - My Drive (home): `https://drive.google.com/drive/my-drive`
+  - Shared with me: `https://drive.google.com/drive/shared-with-me`
+  - Recent: `https://drive.google.com/drive/recent`
+  - Starred: `https://drive.google.com/drive/starred`
+  - Trash: `https://drive.google.com/drive/trash`
+  - Computers (backup & sync): `https://drive.google.com/drive/computers`
+  - Specific folder: `https://drive.google.com/drive/folders/{FOLDER_ID}`
+  - Search results: `https://drive.google.com/drive/search?q={url-encoded-query}`
+
+  **Search operators** (use these in the search URL or search box):
+  - `type:folder` — folders only
+  - `type:document` / `type:spreadsheet` / `type:presentation` / `type:pdf` / `type:image` / `type:video`
+  - `owner:me` / `owner:email@example.com`
+  - `before:2026-01-01` / `after:2026-01-01` — date filters
+  - `title:exact-name` — name matches
+  - `to:email@example.com` / `from:email@example.com` — sharing filters
+  - `is:starred` / `is:trashed`
+  - Free text — searches file names AND content
+
+  Example: `https://drive.google.com/drive/search?q=type%3Adocument%20owner%3Ame%20quarterly`
+
+  ### SNAPSHOT FORMAT
+  browser_snapshot returns:
+  ```
+  Page: My Drive - Google Drive
+  URL: https://drive.google.com/drive/my-drive
+  --- Page Text ---
+  (visible file names, owners, modified dates)
+  --- Interactive Elements ---
+  [12] button "New"                    ← top-left create button (label locale-translated)
+  [13] input "Search in Drive"         ← search box (aria-label localized)
+  [14] link "My Drive"                 ← breadcrumb
+  [40] button "Q2 report.docx"         ← file row (button/row/gridcell depending on view)
+  [41] button "Team Folder"            ← folder row
+  [80] button "Share"                  ← selection toolbar — appears only AFTER a row is selected
+  ```
+  - **File/folder rows**: match the element whose text equals or contains the file NAME (works in list and grid view). If several files share a name, disambiguate via the page text (owner, modified date) or a `title:` search.
+  - **Folders vs files**: safest split — navigate folders via `folders/{ID}` URLs; open files via double-click/Enter.
+  - **Breadcrumbs**: link elements at the top of the file area; click one to go up a level.
+  - Elements inside iframes are marked iframe="true".
+
+  ### CORE PATTERN: SELECT → ACT (all mutations)
+  1. Navigate to the view or search URL containing the file → browser_snapshot.
+  2. Find the file's row by name text.
+  3. browser_click(row_id) — the row highlights (selected, NOT opened).
+  4. browser_snapshot → the selection toolbar appears near the top of the file area with Share, Download, Move, star, Move to trash and "More actions" (⋮) [LIVE-VERIFY: exact aria-labels].
+  5. Click the needed button by aria-label meaning. Actions not in the top row (Rename, Make a copy, Copy link, …) live under ⋮ — click it, snapshot, then click the menu entry.
+  6. Snapshot to verify the outcome.
+  Secondary: after step 3, a single-letter shortcut (Rule 6). Alternative: right-click the row (Rule 7).
+
+  ### TASK: Open a view / list what's in a folder
+  - browser_navigate the URL (My Drive, Shared with me, Recent, Starred, Trash, `folders/{ID}`) → snapshot. The page text lists names + owners + modified dates — read it directly for "what's in …" questions.
+
+  ### TASK: Search for a file
+  1. browser_navigate("https://drive.google.com/drive/search?q={encoded query}") — URL-encode (`:` → %3A, space → %20); combine the operators above.
+  2. browser_snapshot → results are file rows.
+  - UI fallback: browser_type(search input id, query, submit: true).
+
+  ### TASK: Open a file
+  1. Find the row → browser_click(row_id, double: true) — double-click opens it. (Or: single click to select, then browser_press_key("Enter").)
+  2. browser_snapshot → verify: the URL changed (Docs/Sheets/Slides land on a docs.google.com/… URL) or a preview overlay covers the page (PDFs/images — browser_press_key("Escape") closes it).
+  - If the file opened in a NEW tab the snapshot may still show Drive: get the file's URL instead (see Copy link task) and browser_navigate to it directly.
+
+  ### TASK: Download a file
+  1. Select the row → snapshot → click the toolbar button with aria-label ≈ "Download" [LIVE-VERIFY] (also in ⋮ and the right-click menu).
+  2. The browser saves it to the user's Downloads folder — tell the user that is where it landed. No in-page confirmation is guaranteed; do not retry on silence.
+
+  ### TASK: Upload a file
+  1. Navigate to the destination folder first (uploads land in the CURRENT folder).
+  2. Call browser_upload_file("/absolute/path/to/file.pdf") directly — Drive keeps a hidden file input in the DOM, no clicking needed [LIVE-VERIFY].
+  3. browser_snapshot → verify the upload toast or the new file row.
+  - NEVER click New → File upload: it opens a native OS file picker the browser tools cannot drive.
+  - If browser_upload_file reports that no file input was found, tell the user to upload manually and stop.
+
+  ### TASK: Create a folder
+  1. Snapshot the parent view → click the "New" button (top-left; the button that opens the creation menu — label locale-translated).
+  2. Snapshot → click the "New folder" menu entry (first entry in the menu) [LIVE-VERIFY].
+  3. Snapshot → browser_type(folder-name input id, "Name", submit: true) → snapshot to verify.
+
+  ### TASK: Create a Google Doc / Sheet / Slides
+  - browser_navigate("https://docs.google.com/document/create") — or `spreadsheets/create` / `presentation/create`. Fastest path, skips Drive entirely.
+
+  ### TASK: Rename
+  1. Select the row → click ⋮ "More actions" → snapshot → click the Rename entry [LIVE-VERIFY: Rename lives in this menu, not the top toolbar]. Secondary: select → browser_press_key("r").
+  2. Snapshot → the rename dialog input is pre-filled → browser_type(input id, "New name", submit: true) — default replace is what you want here.
+  3. Snapshot → the row shows the new name.
+
+  ### TASK: Move to a folder
+  1. Select the row → click the toolbar/⋮ Move entry (secondary: browser_press_key("z")) → snapshot: a folder-picker dialog opens.
+  2. Click through to the destination (clicking a folder NAVIGATES INTO it — it does not move yet), snapshot each level.
+  3. Click the dialog's "Move" confirm button → snapshot → verify the toast / file gone from the current view.
+
+  ### TASK: Move to trash (delete)
+  1. Select the row → click the toolbar button whose aria-label means "Move to trash" (secondary: browser_press_key("Delete")).
+  2. Snapshot → verify the row is gone (a toast with Undo shows for ~5s). NOTE: in the TRASH view the same action becomes permanent ("Delete forever" + confirm dialog) — be sure of the user's intent before confirming there.
+
+  ### TASK: Restore from trash
+  1. browser_navigate("https://drive.google.com/drive/trash") → snapshot → select the row.
+  2. Click the toolbar button with aria-label ≈ "Restore from trash" [LIVE-VERIFY] (also in the right-click menu).
+  3. Snapshot → row gone from Trash; it returns to its original location.
+
+  ### TASK: Empty the trash
+  1. Navigate to the Trash URL → snapshot → click the "Empty trash" button near the top of the file area [LIVE-VERIFY].
+  2. Snapshot → confirm dialog → click its confirm button → snapshot: view is empty. This is permanent — only do it if the user asked explicitly.
+
+  ### TASK: Star / unstar
+  1. Select the row → browser_press_key("s") toggles the star (or ⋮ menu → "Add to starred" / "Remove from starred").
+  2. Verify via the Starred view URL, not the toast.
+
+  ### TASK: Share (with permission level)
+  1. Select the row → click the toolbar "Share" button (secondary: browser_press_key(".")) → snapshot: the Share dialog opens.
+  2. browser_type("Add people…" input id, "person@example.com", submit: true) → snapshot: the recipient becomes a chip and a permission dropdown (defaults to Editor) appears near the recipient area [LIVE-VERIFY: dropdown structure].
+  3. Set the level: click the dropdown → snapshot → click the "Viewer" / "Commenter" / "Editor" entry [LIVE-VERIFY].
+  4. Click the primary "Send" button → snapshot → dialog closed = shared.
+  - If the user lacks rights on the file, the Share button may simply be absent — report it, do not improvise.
+
+  ### TASK: Copy link / get a file's link
+  - Select the row → ⋮ or right-click → "Copy link" [LIVE-VERIFY] puts it on the clipboard — but you CANNOT read the clipboard. When the user needs the link text: open the file (double-click) and report the URL from the snapshot header, or read the link shown inside the Share dialog.
+
+  ### Gotchas
+  - A focused input swallows single-letter shortcuts (they get typed as text) — browser_press_key("Escape") first after using search or a dialog.
+  - Files the user does not own (Shared with me) may lack Rename/Move/Share — the button just won't be in the snapshot. Report it instead of retrying.
+  - Drive operations apply instantly (no save button); most show a ~5s Undo toast.
+  - "New" button: identify it as the top-left button that opens the creation menu — its label is locale-translated.

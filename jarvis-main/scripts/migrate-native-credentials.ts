@@ -1,0 +1,118 @@
+#!/usr/bin/env bun
+/** See docs/superpowers/specs/2026-09-16-native-credential-encryption.md before live use. */
+import { Database } from "bun:sqlite";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { acquireLockAt, lockPathFor } from "../src/daemon/pid";
+import { setEncryptionKey } from "../src/workflows/db/encryption";
+import {
+  bindNativeCredentials, CredentialMigrationError, inventoryNativeCredentials, migrateNativeCredentials,
+  rollbackCredentialBinding, rollbackNativeCredentials,
+} from "../src/workflows/db/credential-migration";
+
+const USAGE = [
+  "bun scripts/migrate-native-credentials.ts inventory --db <file> [--deployment-version <version>]",
+  "bun scripts/migrate-native-credentials.ts apply --db <file> --data-dir <dir> --deployment-version <version> --recovery <new-file> [--key-file <existing-key>]",
+  "bun scripts/migrate-native-credentials.ts rollback --db <file> --data-dir <dir> --recovery <file> [--key-file <existing-key>]",
+  "bun scripts/migrate-native-credentials.ts bind --db <file> --data-dir <dir> --deployment-version <version> --recovery <new-file> [--key-file <existing-key>]",
+  "bun scripts/migrate-native-credentials.ts rollback-binding --db <file> --data-dir <dir> --recovery <file> [--key-file <existing-key>]",
+  "Use the existing key file OR JARVIS_WORKFLOW_ENCRYPTION_KEY, never both. Keys are never generated.",
+  "Stop the daemon and its supervisor before any write mode. Rollback restores legacy plaintext.",
+  "bind re-wraps plaintext and enc1: rows into the row-bound enc1a: envelope; run it before",
+  "enabling JARVIS_REQUIRE_ENCRYPTED_CREDENTIALS. Use rollback-binding, not rollback, to reverse it.",
+].join("\n");
+
+const MODES = ["inventory", "apply", "rollback", "bind", "rollback-binding"] as const;
+type Mode = (typeof MODES)[number];
+/** Modes that need a key, the locks and a recovery path. */
+const WRITES: readonly Mode[] = ["apply", "rollback", "bind", "rollback-binding"];
+/** Modes that create a journal and therefore pin the deployed version. */
+const CONVERTS: readonly Mode[] = ["apply", "bind"];
+
+function parseArgs(argv: string[]) {
+  const [mode, ...rest] = argv;
+  if (!MODES.includes(mode as Mode)) throw new Error();
+  const writes = WRITES.includes(mode as Mode);
+  const options = new Map<string, string>();
+  const allowed = new Set(["--db", "--data-dir", "--key-file", "--recovery", "--deployment-version"]);
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i]!;
+    const value = rest[i + 1];
+    if (!allowed.has(flag) || options.has(flag) || !value || value.startsWith("--")) throw new Error();
+    options.set(flag, value);
+  }
+  if (!options.has("--db")) throw new Error();
+  if (writes && (!options.has("--data-dir") || !options.has("--recovery"))) throw new Error();
+  if (CONVERTS.includes(mode as Mode) && !options.get("--deployment-version")?.trim()) throw new Error();
+  return { mode: mode as Mode, options, writes };
+}
+
+function loadExistingKey(keyFile: string | undefined): Buffer {
+  const envKey = process.env.JARVIS_WORKFLOW_ENCRYPTION_KEY;
+  if (envKey !== undefined && keyFile !== undefined) {
+    throw new CredentialMigrationError("Select one existing key source: environment or --key-file.");
+  }
+  if (envKey === undefined && keyFile === undefined) {
+    throw new CredentialMigrationError("Supply the existing key using --key-file or JARVIS_WORKFLOW_ENCRYPTION_KEY.");
+  }
+  let hex: string;
+  try { hex = envKey ?? readFileSync(keyFile!, "utf8").trim(); }
+  catch { throw new CredentialMigrationError("The existing key file could not be read."); }
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new CredentialMigrationError("The existing key must contain 64 hex characters.");
+  return Buffer.from(hex, "hex");
+}
+
+async function main(): Promise<number> {
+  if (process.argv.slice(2).includes("--help")) { console.log(USAGE); return 0; }
+  let args: ReturnType<typeof parseArgs>;
+  try { args = parseArgs(process.argv.slice(2)); }
+  catch { console.error(USAGE); return 2; }
+  const { mode, options, writes } = args;
+  const locks: Array<{ release(): void }> = [];
+  let db: Database | undefined;
+  try {
+    const dbPath = realpathSync(options.get("--db")!);
+    if (writes) {
+      const dataDir = realpathSync(options.get("--data-dir")!);
+      // Match restore's locking contract, including JARVIS_HOME. Hold locks
+      // throughout so the daemon cannot start after a one-time lock probe.
+      const lockPaths = [lockPathFor(), lockPathFor(dataDir)].map(path => {
+        const lockDir = dirname(path);
+        mkdirSync(lockDir, { recursive: true });
+        // Resolve directory aliases before deduplication, even without a PID file.
+        return lockPathFor(realpathSync(lockDir));
+      });
+      for (const path of new Set(lockPaths)) {
+        const lock = acquireLockAt(path, process.pid);
+        if (!lock) throw new CredentialMigrationError("Daemon or maintenance task is running; stop it before migration.");
+        locks.push(lock);
+      }
+      setEncryptionKey(loadExistingKey(options.get("--key-file")));
+    }
+    db = new Database(dbPath, { readonly: !writes, readwrite: writes, create: false });
+    if (writes) db.exec("PRAGMA synchronous = FULL");
+    const recoveryPath = writes ? resolve(options.get("--recovery")!) : "";
+    const result = mode === "inventory"
+      ? { deploymentVersion: options.get("--deployment-version") ?? "unknown", ...inventoryNativeCredentials(db) }
+      : mode === "apply"
+        ? migrateNativeCredentials(db, recoveryPath, options.get("--deployment-version")!)
+        : mode === "bind"
+          ? bindNativeCredentials(db, recoveryPath, options.get("--deployment-version")!)
+          : mode === "rollback"
+            ? rollbackNativeCredentials(db, recoveryPath)
+            : rollbackCredentialBinding(db, recoveryPath);
+    console.log(JSON.stringify({ mode, ...result }));
+    return 0;
+  } catch (error) {
+    // Do not print SQLite/JSON/native exception messages or supplied values.
+    console.error(error instanceof CredentialMigrationError
+      ? error.message : "Credential maintenance failed; details withheld to protect stored values. Inspect offline.");
+    return 1;
+  } finally {
+    db?.close();
+    setEncryptionKey(null);
+    for (const lock of locks.reverse()) lock.release();
+  }
+}
+
+if (import.meta.main) process.exitCode = await main();

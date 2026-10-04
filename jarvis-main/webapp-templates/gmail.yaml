@@ -1,0 +1,182 @@
+app_name: Gmail
+domains:
+  - mail.google.com
+keywords:
+  - send an email
+  - send email
+  - send a mail
+  - compose email
+  - write an email
+  - draft an email
+  - check my email
+  - check email
+  - read my email
+  - read email
+  - search my email
+  - unread emails
+  - my inbox
+  - check inbox
+  - inbox zero
+  - reply to email
+  - reply all
+  - forward email
+  - archive the email
+  - delete the email
+  - star the email
+  - e-mail
+description: Gmail — compose, reply, reply-all, forward, search, labels, attachments, drafts, and inbox management
+version: 5
+instructions: |
+  URL: https://mail.google.com
+
+  ### RULES (each stated once — follow exactly)
+  1. ONLY use: browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_scroll, browser_upload_file. browser_evaluate and browser_screenshot are BANNED for Gmail. Never use desktop or sidecar tools.
+  2. **browser_type REPLACES the field's content by default** (clears, then types). To ADD text to a field that already has content — reply/forward bodies contain the quoted thread — you MUST pass `append: true`, or you silently destroy the existing content.
+  3. Snapshot at CHECKPOINTS, not after every action: after navigation, after opening compose, and after Send/Delete/Archive to verify the outcome. [id]s come from the most recent snapshot; you may chain several actions on one snapshot's ids while the layout is stable (e.g. To → Subject → Body from one compose snapshot).
+  4. browser_type(element_id, text) types directly into that element — do NOT click the field first.
+  5. Send button = `<div> role="button">` whose aria-label contains "(Ctrl-Enter)" — the ONLY locale-stable way to find it. NEVER click an `<a>` tag to send — those are folder links; Send/Sent look alike in many locales ("Invia"/"Inviati").
+  6. Folder links: identify by href (#inbox, #sent, #drafts, #starred, #snoozed, #trash, #spam), NOT by text.
+  7. Destructive toolbar buttons (Delete, Archive, Report spam): match by aria-label, NEVER by position in the toolbar.
+  8. browser_press_key("Escape") closes open menus, and closes compose WITHOUT sending (auto-saved as a draft) — use it to abort a compose. Do NOT use Gmail's letter shortcuts (c, e, r, ...): they need keyboard shortcuts enabled in Gmail settings.
+  9. Dynamic class names: Gmail randomizes CSS classes. NEVER select by class.
+  10. If an element is not found after 2 retry snapshots, tell the user. No workarounds, no browser_evaluate.
+  11. Budget: a simple "send email" is at most 10 tool calls (happy path below is 8).
+
+  ### UI LANGUAGE
+  Gmail adapts to the user's locale: button text AND aria-labels may be in any language. References below use STRUCTURAL attributes (tag, role, name, href) that are locale-stable; where aria-label matching is required (toolbar buttons), expect the locale translation of the English label given.
+
+  ### LAYOUT
+  Left sidebar (Compose button, folder links, labels) | main area (email list with Primary/Promotions/Social/Updates tabs, OR one open thread) | top bar (search, settings, account) | compose window (floating modal bottom-right; renders AFTER the inbox elements in the snapshot, higher ids).
+
+  ### State Recognition
+  - **Google sign-in page**: URL contains accounts.google.com → tell user: "Gmail requires Google sign-in. Please log in manually." Stop.
+  - **Loading**: 0 interactive elements or no email rows → wait 3s, snapshot again. Max 2 retries.
+  - **Inbox ready**: `role="tab"` elements and `role="link"` email rows present.
+  - **Email open**: page text shows the email body and a back-to-inbox button exists.
+  - **Compose open**: `<input> role="combobox">` (To) and `<input> name="subjectbox">` (Subject) present.
+
+  ### Element Reference (from REAL browser_snapshot output)
+  **Top bar:**
+  - Search box: `<input> name="q" type="text">` — always name="q".
+
+  **Left sidebar:**
+  - Compose button: `<div> role="button">` — the FIRST role="button" in the sidebar; text is the locale word for "Compose" ("Scrivi" in Italian).
+  - Folder links: `<a>` tags — match by href containing "#inbox", "#starred", "#sent", "#drafts", "#snoozed", "#trash", "#spam".
+
+  **Inbox tabs:** `<div> role="tab">` — Primary is first/selected by default; text is locale-dependent.
+
+  **Email rows (list):**
+  - Each email: `<div> role="link">` containing subject + preview (~80 chars). The SENDER is NOT in the element text — read the PAGE TEXT, which lists "Sender, Subject, date, preview" per email, then click the row whose text matches that subject.
+  - Star toggles (`<span> role="button">`) appear near rows, but in the flat element list you CANNOT reliably bind star N to row N — see the Star task.
+  - Pagination: Older/Newer `<div> role="button">` near the "1–50 of N" counter text; ~50 emails per page.
+
+  **Email view (thread open) — toolbar buttons are `<div> role="button">` with locale aria-labels; match by aria-label MEANING, never position:**
+  - Back to inbox: aria-label ≈ "Back to Inbox" (or just click `<a href="...#inbox">`).
+  - Archive: aria-label ≈ "Archive". Delete: aria-label ≈ "Delete". Report spam: aria-label ≈ "Report spam". Mark as unread: aria-label ≈ "Mark as unread". Labels: aria-label ≈ "Label" — opens the label menu.
+  - Star (message header): `role="button"` near the sender line, aria-label ≈ "Not starred, star this message" (flips to ≈ "Starred" when set).
+  - Reply / Reply all / Forward: buttons top-right of each message (aria-labels ≈ "Reply" / "Reply all") AND links at the thread bottom (Reply first, Forward second; Reply all only on multi-recipient threads).
+  - More options (three dots, per message): `<div> role="button">` — menu contains Reply all, Forward, etc.
+
+  **Compose window (higher element ids than the inbox):**
+  - To field: `<input> role="combobox">` — the ONLY combobox in the compose area.
+  - Cc link: `<span> role="link">` text "Cc". Bcc link: `<span> role="link">` text "Bcc" (locale variants like "Ccn").
+  - Subject: `<input> name="subjectbox">` — always name="subjectbox".
+  - Body: `<div> role="textbox" contenteditable="true">`.
+  - Send button: `<div> role="button">` with "(Ctrl-Enter)" in the aria-label.
+  - Attach (paperclip) button exists but MUST NOT be clicked (native OS picker — see attachment task).
+  - Discard draft: `<div> role="button">` with delete/discard aria-label.
+
+  ---
+
+  ### TASK: Check inbox / read email list
+  1. browser_navigate to https://mail.google.com (skip if there) → browser_snapshot
+  2. Read the PAGE TEXT for senders, subjects, dates, previews. Other tab: click its `role="tab"`, snapshot.
+
+  ### TASK: Find a specific email
+  - **By sender**: find the sender in page text, click the `role="link"` row matching that subject.
+  - **By position (e.g. 100th)**: click Older to paginate (~50/page), then pick from the page.
+  - **By search**: see Search task. Never count/list via browser_evaluate.
+
+  ### TASK: Open and read an email
+  1. Click the email's `<div> role="link">` → browser_snapshot; body is in page text
+  2. Long email: browser_scroll down, snapshot again.
+
+  ### TASK: Compose and send a new email
+  1. Click Compose (first `role="button"` in sidebar)
+  2. browser_snapshot — wait for the To combobox and `name="subjectbox"`; if missing, wait 2-3s and snapshot again
+  3. browser_type(To combobox id, recipient address, submit: true) — ONE call: types the address and Enter confirms it as a chip. Repeat once per extra recipient.
+  4. browser_type(subjectbox id, subject) — no submit
+  5. browser_type(body textbox id, body text) — no submit
+  6. Click Send (aria-label contains "(Ctrl-Enter)")
+  7. browser_snapshot — compose gone (no combobox/subjectbox) = sent.
+
+  ### TASK: CC / BCC
+  1. With compose open, click the Cc or Bcc `<span> role="link">` → browser_snapshot
+  2. A new combobox row appears (order: To, Cc, Bcc). browser_type(that combobox, address, submit: true). Continue with subject/body as normal.
+
+  ### TASK: Send email with attachment
+  1. Open compose; fill To, Subject, Body as above
+  2. Do NOT click the Attach (paperclip) button — it opens a native OS file picker the browser tools cannot drive
+  3. Call browser_upload_file with the absolute file path (e.g. "/home/user/report.pdf") — it sets Gmail's hidden file input directly
+  4. browser_snapshot — verify an attachment chip with the filename appears at the bottom of the compose window (upload may take a few seconds for big files)
+  5. Click Send, snapshot to verify.
+
+  ### TASK: Reply to an email
+  1. Open the email; click Reply (first bottom-of-thread action link, or the header Reply button)
+  2. browser_snapshot — inline reply area with a contenteditable body appears
+  3. browser_type(reply body id, text, append: true) — append is the safe choice: it preserves any quoted/prefilled content already in the box
+  4. Click Send ("(Ctrl-Enter)" aria-label) → browser_snapshot to verify.
+
+  ### TASK: Reply all
+  1. Open the email → browser_snapshot
+  2. Click the element whose aria-label/text is the locale "Reply all" (message header next to Reply, or a bottom-of-thread link). If not visible: click the message's More options (three-dot) button, snapshot, pick Reply all from the menu.
+  3. Type the reply with append: true, click Send, snapshot to verify.
+
+  ### TASK: Forward an email
+  1. Open the email; click Forward (second bottom-of-thread link, or via More options menu)
+  2. browser_snapshot — forward draft appears; the body ALREADY CONTAINS the quoted message
+  3. browser_type(To combobox, recipient, submit: true)
+  4. To add a note: browser_type(body id, note, append: true) — MUST be append:true; plain browser_type would ERASE the quoted email. (The note lands after the quote — acceptable; never trade placement for data loss.)
+  5. Click Send, snapshot to verify.
+
+  ### TASK: Search for emails
+  1. browser_type(search box name="q", query, submit: true) — one call. Operators: from:, to:, subject:, has:attachment, is:unread, is:starred, after:2026/03/01 before:2026/04/01, in:anywhere
+  2. browser_snapshot — results appear as email rows.
+
+  ### TASK: Delete an email
+  1. Open the email → browser_snapshot
+  2. Click the toolbar button whose aria-label means "Delete" (locale translation if UI isn't English). Never pick by toolbar position.
+  3. browser_snapshot — you land back at the list. WARNING: "back at inbox" alone does NOT prove Delete ran (Archive/Report spam look identical afterwards). If the aria-label match was uncertain, confirm by opening #trash (href link or https://mail.google.com/mail/u/0/#trash) and checking the email is listed there.
+
+  ### TASK: Archive an email
+  1. Open the email; click the toolbar button whose aria-label means "Archive" (never by position)
+  2. browser_snapshot — back at the list. To confirm it was archived (not deleted): absent from #inbox, findable via search in:anywhere, NOT in #trash.
+
+  ### TASK: Star / Unstar an email
+  - **Reliable**: open the email, click the star `role="button"` in the message header (aria-label ≈ "Not starred..."), snapshot — aria-label now reads ≈ "Starred".
+  - **Best-effort (list)**: the per-row `<span> role="button">` star exists, but only click it when the binding to the intended row is unambiguous (e.g. a single search result); otherwise open the email.
+
+  ### TASK: Label an email
+  1. Open the email; click the Labels toolbar button (aria-label ≈ "Label") → browser_snapshot
+  2. A menu of label checkboxes appears: click the target label, then click Apply (if shown). browser_press_key("Escape") closes the menu.
+  3. Snapshot to verify the label chip appears on the thread.
+
+  ### TASK: Mark read / unread
+  - Unread → read: opening the email marks it read.
+  - Read → unread: open the email, click the toolbar button with aria-label ≈ "Mark as unread" → you land back at the list; the row renders bold/unread.
+
+  ### TASK: Resume a draft
+  1. Click `<a href="...#drafts">` (or navigate to https://mail.google.com/mail/u/0/#drafts) → browser_snapshot
+  2. Click the draft's `role="link"` row → snapshot — compose opens prefilled
+  3. Add body text ONLY with append: true (plain type erases the draft body). Fill any missing To/Subject, then Send as usual.
+
+  ### TASK: Folders & pagination
+  - Sent / Drafts / Starred / Trash / Spam: click the `<a>` with the matching href fragment, then snapshot.
+  - Next page (older): click the Older button near the "1–50 of N" counter; Newer goes back.
+  - Back to inbox from a thread: the back toolbar button, or `<a href="...#inbox">`.
+
+  ---
+
+  ### Gotchas
+  - **submit:true scope**: only on To/Cc/Bcc (confirms the recipient chip) and the search box. Never on Subject or Body (Enter there inserts a newline or mis-fires).
+  - **Draft leftovers**: an aborted compose (Escape) leaves a draft in #drafts — tell the user if you abandoned a send.

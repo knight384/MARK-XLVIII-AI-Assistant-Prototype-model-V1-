@@ -1,0 +1,243 @@
+/* Pebble — Brand Book III "Monochrome Lab".
+   The signature glass "drop": a rotated teardrop lens that lives at the
+   cursor and breathes in one state hue at a time. This bundle is
+   self-contained (pebble.html loads only this file), so it declares its
+   own tokens. The production native pebble (sidecar GDI+/Cocoa/Cairo) must
+   match this visual — this is the reference. */
+
+:root {
+  --sans: 'Familjen Grotesk', system-ui, -apple-system, sans-serif;
+  --mono: 'Spline Sans Mono', ui-monospace, monospace;
+
+  --listen: #E63B2E; --speak: #2D78FF; --hold: #EAA40E; --ok: #2FA45E;
+
+  /* neutrals for the summoned Talk panel (light glass) */
+  --bg: #FAFBFC; --raise: #FFFFFF; --panel: #EFF2F5; --rule: #E2E7EC; --rule2: #EDF0F3;
+  --ink: #13161A; --ink2: #535B63; --ink3: #677077;
+  --listen-tx: #C2301F; --speak-tx: #1E5FD8;
+
+  --corner: 14px 3px 14px 14px; --corner-sm: 9px 2px 9px 9px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+}
+
+html, body, #pebble-root {
+  margin: 0; padding: 0;
+  background: transparent;
+  font-family: var(--sans);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none; -webkit-user-select: none;
+  overflow: hidden; height: 100%;
+}
+
+/* Native: fully transparent so the desktop shows through. */
+body.pebble-native-transparent { background: transparent; }
+
+/* Dev backdrop — cool Monochrome Lab neutral with a faint red bloom. */
+body.pebble-dev-backdrop {
+  background:
+    radial-gradient(760px 480px at 70% 14%, rgba(230,59,46,.06), transparent 60%),
+    linear-gradient(180deg, #F6F8FA, #FAFBFC);
+  min-height: 100vh;
+}
+body.pebble-dev-backdrop::before {
+  content: "browser dev mode · ⌃+click to summon · esc to dismiss";
+  position: fixed; left: 16px; top: 16px;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--ink3); pointer-events: none;
+}
+
+/* ============================================================
+   The pebble — purely visual, never intercepts pointer events.
+   ============================================================ */
+
+.pebble {
+  position: fixed; top: 0; left: 0; z-index: 100;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  width: 26px; height: 26px;
+  will-change: transform;
+}
+
+/* ── the glass drop ── */
+.gd {
+  position: absolute; inset: 0;
+  border-radius: 50% 50% 50% 6px;
+  transform: rotate(45deg);
+  overflow: hidden;
+  background: rgba(255,255,255,.16);
+  border: .5px solid rgba(20,30,45,.34);
+  -webkit-backdrop-filter: blur(2px) brightness(1.05) saturate(1.18);
+  backdrop-filter: blur(2px) brightness(1.05) saturate(1.18);
+  box-shadow:
+    inset 1px 1px 1.5px rgba(255,255,255,.95),
+    inset -1px -1px 2px rgba(255,255,255,.4),
+    0 3px 10px -2px rgba(20,30,45,.4);
+  transition: box-shadow 240ms var(--ease);
+}
+.gd .in {
+  position: absolute; inset: 0; border-radius: inherit;
+  opacity: 0;
+}
+.gd .ring {
+  position: absolute; inset: -2px; border-radius: inherit; opacity: 0;
+  background: conic-gradient(from 0deg, transparent 0 200deg, rgba(255,255,255,.98) 300deg, transparent 360deg);
+  -webkit-mask: radial-gradient(circle, transparent 36%, #000 44%, #000 58%, transparent 66%);
+  mask: radial-gradient(circle, transparent 36%, #000 44%, #000 58%, transparent 66%);
+}
+
+@keyframes pb-breathe { 0%,100%{opacity:.55} 50%{opacity:1} }
+@keyframes pb-breathe-scale { 0%,100%{opacity:.7;transform:scale(.94)} 50%{opacity:1;transform:scale(1.05)} }
+@keyframes pb-spin { to { transform: rotate(360deg); } }
+@keyframes pb-idle { 0%,100%{opacity:.34} 50%{opacity:.6} }
+
+/* ── states (parent class set by the component) ── */
+
+/* idle — clear glass, a faint neutral presence */
+.pebble--idle .gd .in {
+  opacity: .42; animation: pb-idle 4s ease-in-out infinite;
+  background: radial-gradient(circle, rgba(120,128,138,.6), transparent 68%);
+}
+
+/* listening — red */
+.pebble--listening .gd .in {
+  opacity: 1; animation: pb-breathe 1.4s infinite;
+  background: radial-gradient(circle, rgba(230,59,46,.95), rgba(230,59,46,.3) 55%, transparent 72%);
+}
+.pebble--listening .gd {
+  box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.95), inset -1px -1px 2px rgba(255,255,255,.4),
+              0 4px 14px -3px rgba(230,59,46,.55), 0 2px 6px rgba(20,30,45,.3);
+}
+
+/* thinking — spinning ring */
+.pebble--thinking .gd .ring { opacity: 1; animation: pb-spin 1.4s linear infinite; }
+
+/* speaking — blue */
+.pebble--speaking .gd .in {
+  opacity: 1; animation: pb-breathe-scale 1.6s infinite;
+  background: radial-gradient(circle, rgba(45,120,255,1), rgba(45,120,255,.5) 48%, transparent 72%);
+}
+.pebble--speaking .gd {
+  box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.95), inset -1px -1px 2px rgba(255,255,255,.4),
+              0 4px 14px -3px rgba(45,120,255,.55), 0 2px 6px rgba(20,30,45,.3);
+}
+
+/* working — blue, steady (running / executing) */
+.pebble--working .gd .in {
+  opacity: 1; animation: pb-breathe 2.4s infinite;
+  background: radial-gradient(circle, rgba(45,120,255,.95), rgba(45,120,255,.4) 52%, transparent 72%);
+}
+.pebble--working .gd {
+  box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.95), inset -1px -1px 2px rgba(255,255,255,.4),
+              0 4px 14px -3px rgba(45,120,255,.5), 0 2px 6px rgba(20,30,45,.3);
+}
+
+/* asking — amber, the attention pulse (waiting on your authority/approval) */
+.pebble--asking .gd .in {
+  opacity: 1; animation: pb-breathe 2s infinite;
+  background: radial-gradient(circle, rgba(234,164,14,.9), rgba(234,164,14,.28) 55%, transparent 72%);
+}
+.pebble--asking .gd { animation: pb-askglow 2s var(--ease) infinite; }
+@keyframes pb-askglow {
+  0%,100% { box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.95), 0 0 0 0 rgba(234,164,14,.5), 0 3px 10px -2px rgba(20,30,45,.4); }
+  50%     { box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.95), 0 0 0 7px rgba(234,164,14,0), 0 3px 10px -2px rgba(20,30,45,.4); }
+}
+
+/* done — green flash, one-shot */
+.pebble--done .gd .in {
+  opacity: 0; animation: pb-done .9s var(--ease) both;
+  background: radial-gradient(circle, rgba(47,164,94,.95), rgba(47,164,94,.3) 55%, transparent 72%);
+}
+@keyframes pb-done { 0%{opacity:0;transform:scale(.55)} 30%{opacity:1} 100%{opacity:0;transform:scale(1.18)} }
+.pebble--done .gd {
+  box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.95), inset -1px -1px 2px rgba(255,255,255,.4),
+              0 4px 14px -3px rgba(47,164,94,.5), 0 2px 6px rgba(20,30,45,.3);
+}
+
+/* muted — quiet, no chroma, dashed edge */
+.pebble--muted .gd {
+  background: rgba(225,230,238,.34);
+  border: .5px dashed rgba(120,128,138,.85);
+  -webkit-backdrop-filter: blur(2px) saturate(.6);
+  backdrop-filter: blur(2px) saturate(.6);
+  box-shadow: inset 1px 1px 1.5px rgba(255,255,255,.7), 0 3px 10px -2px rgba(20,30,45,.35);
+}
+.pebble--muted .gd .in {
+  opacity: .5;
+  background: repeating-linear-gradient(45deg, rgba(120,128,138,.5) 0 2px, transparent 2px 5px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gd .in, .gd .ring, .pebble--asking .gd { animation: none !important; }
+  .pebble--idle .gd .in, .pebble--listening .gd .in, .pebble--speaking .gd .in,
+  .pebble--working .gd .in, .pebble--asking .gd .in, .pebble--done .gd .in { opacity: 1; transform: none; }
+  .pebble--thinking .gd .ring { opacity: 1; }
+}
+
+/* ============================================================
+   Summoned Talk bubble — light glass panel
+   ============================================================ */
+
+.pebble-thread {
+  position: fixed; top: 0; left: 0; z-index: 99;
+  pointer-events: auto;
+  width: 320px;
+  transform: translate(-50%, -100%);
+  background: color-mix(in srgb, var(--raise) 80%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  border: .5px solid var(--rule);
+  border-radius: var(--corner);
+  padding: 13px 15px 12px;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.6), 0 18px 40px -16px rgba(20,30,45,.45);
+  animation: pb-bubble-in 240ms var(--ease);
+  will-change: transform;
+}
+@keyframes pb-bubble-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% + 6px)); }
+  to   { opacity: 1; transform: translate(-50%, -100%); }
+}
+
+.thread-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink3);
+  margin-bottom: 9px;
+}
+.thread-dismiss {
+  background: transparent; border: 0; font: inherit;
+  color: var(--ink3); cursor: pointer; padding: 2px 4px;
+}
+.thread-dismiss:hover { color: var(--ink); }
+
+.thread-body {
+  font-family: var(--sans); font-size: 14.5px; line-height: 1.45; color: var(--ink);
+  letter-spacing: -0.005em;
+}
+.thread-from {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.16em; color: var(--speak-tx);
+  margin-right: 8px;
+}
+
+.thread-actions { display: flex; gap: 7px; margin-top: 13px; }
+.thread-btn {
+  font-family: var(--sans); font-size: 12px; font-weight: 600;
+  padding: 6px 12px; border-radius: var(--corner-sm);
+  border: 1px solid var(--rule); background: var(--raise); color: var(--ink);
+  cursor: pointer; transition: background 150ms var(--ease), border-color 150ms var(--ease);
+}
+.thread-btn:hover { background: var(--panel); border-color: var(--ink3); }
+.thread-btn--primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.thread-btn--primary:hover { background: var(--ink); filter: brightness(1.12); }
+
+.thread-hint {
+  margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--rule2);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.06em; color: var(--ink3);
+}
+.thread-hint kbd {
+  font-family: var(--mono); background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 5px 1px 5px 5px;
+  padding: 1px 4px; font-size: 9.5px; color: var(--ink2); margin: 0 1px;
+}

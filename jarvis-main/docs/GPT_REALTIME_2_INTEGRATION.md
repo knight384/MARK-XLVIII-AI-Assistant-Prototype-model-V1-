@@ -1,0 +1,200 @@
+# GPT-Realtime-2 Integration
+
+Premium opt-in speech-to-speech voice via OpenAI's GA Realtime API
+(`gpt-realtime-2`). When enabled with a key, JARVIS streams mic audio to OpenAI
+and plays the model's audio back, with the daemon acting as both the audio relay
+and the tool executor. When disabled (the default) JARVIS uses the standard
+STT -> text LLM -> TTS pipeline, which is unaffected by anything here.
+
+This document is the rationale companion to the code; source files reference it
+by section. It is intentionally decision-focused rather than a full API spec.
+
+## 1. Entitlement & key resolution
+
+Entitlement is simply "the user supplies a working OpenAI key" - there is no
+separate licensing. Resolution (`resolveRealtimeVoice`, `src/config/realtime.ts`)
+never throws: when realtime is unavailable it returns `{ ok: false, reason }`
+and the caller logs a warning and falls back to the standard pipeline.
+
+Key resolution: the realtime session reuses the key of the OpenAI provider
+configured under Settings > LLM (stored in the DB + encrypted keychain). There
+is no separate realtime credential and no `config.yaml` or env-var fallback -
+if no OpenAI provider is configured, realtime voice reports unavailable.
+
+The user is billed by OpenAI directly (BYO key). The Settings > Voice GET
+endpoint redacts the key and reports `has_api_key` / `available` only.
+
+Hosted installs (a `usejarvis_ai` block) are the exception: they never read a
+user key. `resolveRealtimeVoice` points the session at the LLM proxy with the
+plan-gated `uj-realtime` alias as the model, and the proxy maps that alias to the
+upstream OpenAI model when the socket is dialed.
+
+## 2. Protocol notes (GA, post-2026-05)
+
+These were confirmed via the live smoke test (`scripts/realtime-smoke.ts`) and
+are load-bearing - they differ from the older beta:
+
+- Connect to `wss://api.openai.com/v1/realtime?model=...` with a Bearer key and
+  **no** `OpenAI-Beta` header.
+- Session config is nested under `session.audio.{input,output}` with
+  `session.type: 'realtime'`.
+- We name the model only in `?model=` on the connect URL, never as
+  `session.model` in `session.update`. OpenAI would accept it on a direct key,
+  but the proxy (section 1, hosted) only maps the alias at dial time and forwards
+  the update verbatim, so OpenAI rejects `uj-realtime` there with
+  `invalid_value: Unsupported option for this model.` and every hosted session
+  dies before it starts.
+- Reasoning effort is `session.reasoning.effort` (GPT-5 convention), not a
+  top-level field.
+- Output audio events use the `response.output_audio*` names
+  (`response.output_audio.delta`, `response.output_audio_transcript.*`).
+- `format.rate` is **required** on both input and output audio formats. OpenAI
+  rejects an input rate below 24 kHz (`MIN_REALTIME_INPUT_RATE`); transports
+  capturing lower (e.g. a 16 kHz mic) must upsample before streaming.
+- Turn detection uses plain `semantic_vad` - the low-latency, preamble-friendly
+  default. `server_vad` and eagerness tuning both measured worse. The first-turn
+  "doesn't start" symptom was dropped opening audio (fixed by transport
+  buffering), not the VAD - leave it alone.
+
+### Latency decisions
+
+- A lean ~100-token voice prompt is used instead of the full ~5.6k-token agent
+  prompt; the big context dominated per-turn latency for simple questions. Tools
+  are still attached so capability is unchanged.
+- The opening words of a turn are buffered during the connect window
+  (`MAX_PENDING_MIC_FRAMES`, a sliding ~3s window of the most recent audio) so
+  the first utterance isn't lost. The window keeps the most recent audio for VAD
+  continuity rather than the absolute earliest frames.
+
+## 3. Audio transport (§3a)
+
+`AudioTransport` (`src/comms/audio-transport.ts`) decouples `RealtimeSession`
+from where audio comes from / goes to. Contract: PCM signed-16 little-endian,
+mono; the transport declares its sample rate so the session announces a matching
+`audio.input.format.rate`.
+
+`BrowserAudioTransport` is the only implementation today: mic frames arrive as
+binary WS frames (`pushMicChunk`) and output audio is relayed to the browser via
+the `sendAudio` hook. Playback timing/queueing lives in the browser
+(`RealtimeVoiceController`, `ui/src/lib/`). A `PebbleAudioTransport` can be added
+later against the same interface with no session changes.
+
+**Wire tag.** The dashboard socket also carries encoded TTS (MP3/WAV between
+`tts_start` and `tts_end`), so ws-service prefixes every realtime output frame
+with a 4-byte tag, `01 00 FF FF` (`src/comms/realtime-frame.ts`). The dashboard
+routes by the tag: tagged frames go to `RealtimeVoiceController` with the tag
+stripped, while its session is active; untagged frames go to the decoder, only
+inside a TTS turn. Routing by voice state instead played MP3 bytes as PCM
+(static) when a clip was stopped mid-session. The tag has an even length and
+reads as the samples +1 and -1, so a dashboard bundle older than the tag plays
+two samples of silence.
+
+### Barge-in
+
+On `input_audio_buffer.speech_started` the session both cancels the in-flight
+response server-side (`response.cancel`) and stops local playback. Cancelling
+matters: without it OpenAI keeps generating tokens/audio the user will never
+hear, and trailing deltas can replay over the interruption. Deltas that arrive
+after a cancel (before the next `response.created`) are suppressed.
+
+### Tool results
+
+OpenAI refuses a `response.create` while a response is active
+(`conversation_already_has_active_response`). So each `function_call_output` is
+sent as soon as its tool returns, but the one `response.create` that voices them
+waits until every call handed out is answered and `response.done` has landed.
+The wait on sibling calls is bounded (`TOOL_RESULT_GRACE_MS`, 4s), since no tool
+has a timeout: after it, the results already in are voiced and a late one is
+voiced on its own. Seeing no output for the missing call, the model may call that
+tool again, so a legitimately long tool next to a quick one in the same reply can
+be dispatched twice. Calls from an earlier reply stop counting once a new
+response starts. A refusal anyway (a response started that we have not heard
+about yet) is not an error: the request is repeated after that response ends.
+From a barge-in until the VAD's response starts nothing is voiced, because that
+response already sees the outputs; the dashboard's stop drops them too. Sending
+one `response.create` per result killed pebble sessions on any two-tool reply,
+since the pebble treats every `error` event as fatal.
+
+## 4. Daemon wiring
+
+### Phase 2 - session wiring
+
+`RealtimeVoiceSession` (`src/daemon/realtime-voice.ts`) glues a
+`RealtimeSession` to an `AudioTransport` and to the tool executor. It is kept
+separate from `ws-service` so it is unit-testable with an injected session
+factory. ws-service opens (or reuses) one session per socket; a session spans
+the whole conversation (semantic VAD detects turns), and is closed on
+disconnect, on `max_session_minutes`, or when the monthly budget is reached.
+
+When the server closes a session it sends `realtime_status: { state: 'closed' }`;
+the browser must stop streaming on this, or it keeps a hot mic streaming into a
+session that no longer exists.
+
+A PCM `voice_start` the daemon cannot serve is refused the same way, with a
+reason: `plan` (the hosted plan excludes realtime) or `unavailable` (realtime is
+off or not configured). Either makes the dashboard re-check `/api/config/voice`
+at once, so the next utterance takes the standard pipeline. A realtime `error`
+sends `realtime_status: { state: 'error' }` and ends the daemon session too,
+since the dashboard ends its side on it. A dropped socket ends both sides with
+no message: the daemon closes the session with the socket and the dashboard
+clears its session state in `onclose`.
+
+Proactive voice (`broadcastProactiveVoice`) leaves out a socket that is mid-turn
+in its realtime session (a response in flight, or mic audio in the last 2s): the
+clip would talk over the model and the open mic would feed it back in. Only the
+audio is skipped.
+
+### Phase 3 - auto-approve tool bridge
+
+`orchestrator.executeRealtimeToolCall` mirrors the text-path authority gate but
+**auto-approves**: a `requiresApproval` decision is executed so the audio loop is
+never blocked on a dashboard click. Still enforced:
+
+- emergency state,
+- explicit hard denies,
+- the `blocked_categories` backstop.
+
+Every realtime tool call is written to the audit trail tagged `channel: 'voice'`;
+an auto-approved call is logged as `approval_required` + `executed: true` so the
+trail shows no human confirmed it.
+
+**Safe defaults.** Because the mic is open and tools auto-approve, the backstop
+must be safe by default. When `blocked_categories` is unset it defaults to every
+`destructive`-impact action category (`DEFAULT_BLOCKED_CATEGORIES`): payments,
+deletes, shell exec, software installs, settings changes, agent termination.
+These stay blocked unless the user explicitly opts them back in by setting
+`blocked_categories` to an explicit array (including `[]` to disable the backstop
+entirely). This prevents an open mic - or TTS echo / background speech - from
+triggering an irreversible action unattended.
+
+### Cost guards
+
+- `max_session_minutes` - hard cap on a single session; the daemon closes it on
+  timeout.
+- `monthly_budget_usd` - soft monthly ceiling. Spend is **estimated** from
+  session wall-clock at the ~$/min figure shown in Settings > Voice (OpenAI
+  bills per token, but no live invoice is available mid-session), persisted per
+  month under the data dir (`realtime-budget.ts`), and checked at session start.
+  Once the estimate reaches the budget, new sessions are refused with a
+  `realtime_status: { state: 'closed', reason: 'budget', message }` (the client
+  surfaces the message as a system line and stops the mic), and the standard
+  pipeline is unaffected. This is an approximate guard, not accounting:
+  - Spend is only recorded at session close, and `canStart` reads fresh at
+    start, so concurrent sessions (e.g. multiple browser tabs) opened before any
+    close all observe the same pre-spend total and can overshoot the cap. This
+    is accepted for the single-user daemon; close it with an in-memory in-flight
+    reservation if multi-session overshoot ever matters.
+
+`GET /api/config/voice` reports the **effective** `blocked_categories` (the
+applied default when unset) plus `blocked_categories_default: true|false`, so a
+client can't misread the safe default as "nothing blocked" and a read-modify-
+write round-trip can't silently persist `[]` and disable the backstop.
+
+## 5. Input validation
+
+`POST /api/config/voice` validates the patch (`validateVoicePatch`,
+`src/daemon/config-merge.ts`) before merge/persist: known top-level keys only,
+`wake_engine` and `reasoning_effort` against their enums, `max_session_minutes`
+bounded numeric, `monthly_budget_usd` non-negative-or-null, `blocked_categories`
+an array of strings. The merge preserves the stored `api_key` when the patch
+omits it (the GET endpoint redacts it, so a UI round-trip never sees the value).

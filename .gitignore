@@ -1,0 +1,42 @@
+# --- Secrets & generated local config (Phase 1) ---
+config/api_keys.json
+config/app_config.json
+config/secrets.json
+config/certs/
+memory/long_term.json
+
+# --- Generated memory store (Phase 5) — same rationale as long_term.json
+# above: this is per-user runtime data, not source, and may contain
+# personal information. See docs/memory.md. ---
+memory/preferences.json
+memory/memory.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# --- Logs (Phase 1 logging output) ---
+logs/
+*.log
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+__MACOSX/
+
+# --- Runtime artifacts ---
+uploads/
+*.pid

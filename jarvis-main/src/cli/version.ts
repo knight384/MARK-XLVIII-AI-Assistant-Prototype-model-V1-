@@ -1,0 +1,93 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawnSync } from 'bun';
+
+function readPackageVersion(packageRoot: string): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf-8')) as { version?: unknown };
+    if (typeof pkg.version !== 'string' || pkg.version.length === 0) return '0.0.0';
+    return pkg.version;
+  } catch {
+    return '0.0.0';
+  }
+}
+
+// JARVIS_GIT_BIN is a test-only seam: lets unit tests substitute a fake
+// git binary so we don't depend on the host's real git installation.
+function runGit(args: string[], cwd: string): string | null {
+  const gitBin = process.env.JARVIS_GIT_BIN || 'git';
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync([gitBin, '-C', cwd, ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+  } catch {
+    // git binary missing or unspawnable — treat as "no git here".
+    return null;
+  }
+
+  if (result.exitCode !== 0 || !result.stdout) {
+    return null;
+  }
+
+  const text = result.stdout.toString().trim();
+  return text || null;
+}
+
+// Use git's own probe instead of `existsSync('.git')` so linked worktrees
+// (where `.git` is a file pointing into the main repo) and submodules
+// resolve correctly. Falls through to package.json when git can't answer.
+function isGitCheckout(packageRoot: string): boolean {
+  return runGit(['rev-parse', '--git-dir'], packageRoot) !== null;
+}
+
+function stripLeadingV(s: string): string {
+  return s.startsWith('v') ? s.slice(1) : s;
+}
+
+// `git describe --tags --always` falls back to a bare commit SHA in repos
+// with no tags reachable from HEAD. Reject anything that doesn't look like
+// a version so the package.json fallback wins instead of printing `abc1234`.
+function looksLikeVersion(s: string): boolean {
+  return /^v?\d+\.\d+/.test(s);
+}
+
+/**
+ * Pick the version to report, preferring the most specific git source that
+ * actually looks like one.
+ *
+ * BOTH git sources are validated, not just `describedVersion`. This repo also
+ * carries tags that are not bare versions - the installer releases as
+ * `installer-v0.1.1` - and an unvalidated exact match returned the whole tag
+ * name, so a checkout sitting on such a tag printed `vinstaller-v0.1.1` from
+ * `jarvis --version` (the caller adds the `v`). package.json is the right
+ * answer there.
+ */
+export function selectInstalledVersion(
+  exactTag: string | null,
+  describedVersion: string | null,
+  packageVersion: string,
+): string {
+  if (exactTag && looksLikeVersion(exactTag)) return stripLeadingV(exactTag);
+  if (describedVersion && looksLikeVersion(describedVersion)) return stripLeadingV(describedVersion);
+  return packageVersion;
+}
+
+export function getInstalledVersion(packageRoot: string): string {
+  const pkgVersion = readPackageVersion(packageRoot);
+
+  if (!isGitCheckout(packageRoot)) {
+    return pkgVersion;
+  }
+
+  const exactTag = runGit(['describe', '--tags', '--exact-match'], packageRoot);
+  if (exactTag && looksLikeVersion(exactTag)) {
+    return selectInstalledVersion(exactTag, null, pkgVersion);
+  }
+
+  // A non-version exact tag falls through: describe returns that same tag,
+  // selectInstalledVersion rejects it in turn, and package.json wins.
+  const describedRaw = runGit(['describe', '--tags', '--always'], packageRoot);
+  return selectInstalledVersion(null, describedRaw, pkgVersion);
+}

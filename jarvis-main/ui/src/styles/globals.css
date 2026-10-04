@@ -1,0 +1,149 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+:root {
+  /* Legacy IDE (Workspaces §02) status hues — the last of the old --j-* graft.
+     The rest were flattened onto Monochrome Lab tokens in Phase 6; these stay
+     only because the IDE overrides error/warning room-scoped to the -tx text
+     variants, so a global flatten would shift the colour (--j-success is still
+     read by SidecarConfigEditor). Remove with the native IDE rebuild. */
+  --j-warning: var(--hold);
+  --j-error: var(--listen);
+  --j-success: var(--ok);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--rule);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+}
+
+/* Selection */
+::selection {
+  background: rgba(139,92,246,0.3);
+  color: white;
+}
+
+/* ── Markdown Content ────────────────────────────────────────── */
+
+.markdown-content {
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.markdown-content > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  color: var(--ink);
+  font-weight: 600;
+  margin: 16px 0 8px;
+  line-height: 1.3;
+}
+
+.markdown-content h1 { font-size: 1.4em; border-bottom: 1px solid var(--rule); padding-bottom: 4px; }
+.markdown-content h2 { font-size: 1.25em; }
+.markdown-content h3 { font-size: 1.1em; }
+.markdown-content h4 { font-size: 1em; color: var(--ink2); }
+
+.markdown-content p {
+  margin: 6px 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.markdown-content li {
+  margin: 2px 0;
+}
+
+.markdown-content li > p {
+  margin: 2px 0;
+}
+
+.markdown-content li::marker {
+  color: var(--ink3);
+}
+
+/* Task list checkboxes */
+.markdown-content li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -20px;
+}
+
+.markdown-content strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.markdown-content em {
+  color: var(--ink2);
+  font-style: italic;
+}
+
+.markdown-content del {
+  color: var(--ink3);
+  text-decoration: line-through;
+}
+
+.markdown-content a:hover {
+  border-bottom-color: var(--ink) !important;
+}
+
+/* Task card update pulse */
+@keyframes taskPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 16px 4px rgba(0, 212, 255, 0.15);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, 0);
+  }
+}

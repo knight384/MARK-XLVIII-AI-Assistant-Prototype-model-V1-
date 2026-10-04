@@ -1,0 +1,160 @@
+/**
+ * Spawn the activepieces engine bundle as a child process and shape its
+ * environment so it dials back to the SandboxApi's WS endpoint.
+ *
+ * The engine reads the env vars below at boot (see
+ * `src/workflows/activepieces/packages/server/engine/src/main.ts` and
+ * `lib/worker-socket.ts`):
+ *
+ *   - SANDBOX_ID                  required; doubles as the WS auth identifier
+ *   - AP_SANDBOX_WS_PORT          required; daemon's WS server port
+ *   - AP_EXECUTION_MODE           SANDBOX_PROCESS (we never use the others)
+ *   - AP_BASE_CODE_DIRECTORY      where CODE actions are materialized
+ *   - AP_PAUSED_FLOW_TIMEOUT_DAYS pausedFlow expiry cap
+ *   - AP_NETWORK_MODE             optional; STRICT enables proxy rebinding
+ *   - AP_CUSTOM_PIECES_PATHS      colon-separated piece search roots
+ *   - AP_DEV_PIECES               CSV of dev piece names (matched in dist/)
+ *
+ * stdio is `[ignore, pipe, pipe]` so we can capture stdout/stderr -- the engine
+ * forwards piece console output via the WorkerNotifyContract over socket.io,
+ * but truly catastrophic startup failures (couldn't load the bundle, etc.) go
+ * to stderr before the WS comes up.
+ */
+
+import { spawn, type ChildProcess } from "node:child_process";
+
+export interface SpawnedEngine {
+  pid: number;
+  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  kill(signal?: NodeJS.Signals): void;
+  stdout: NodeJS.ReadableStream | null;
+  stderr: NodeJS.ReadableStream | null;
+  /** The underlying child handle, for callers that need the raw streams. */
+  child: ChildProcess;
+  /**
+   * Synchronously-checkable liveness flag. `true` from spawn until the
+   * `close` event fires; `false` thereafter. Engine pool uses this to
+   * decide whether to park or discard a released engine without racing
+   * against `exited` (which only resolves on the next microtask).
+   */
+  alive(): boolean;
+  /**
+   * Rejects if the child emits `error` (failed exec, EAGAIN under fork
+   * pressure, killed by the OS before exec). Never resolves otherwise.
+   *
+   * This also exists to KEEP a listener on the child's `error` event:
+   * unhandled, that event is thrown, and an async one would take the whole
+   * daemon down rather than failing one acquire.
+   */
+  spawnFailed: Promise<never>;
+}
+
+export interface SpawnEngineOptions {
+  bundlePath: string;
+  sandboxId: string;
+  sandboxWsPort: number;
+  baseCodeDir: string;
+  executionMode?: "SANDBOX_PROCESS" | "UNSANDBOXED";
+  pausedFlowTimeoutDays?: number;
+  networkMode?: "STRICT";
+  customPiecesPaths?: string[];
+  devPieces?: string[];
+  /** Override `process.execPath`. Default: same Bun binary running the daemon. */
+  runtime?: string;
+  /** Extra env merged on top of the defaults. */
+  env?: Record<string, string | undefined>;
+  /**
+   * Working directory for the spawned engine. The piece-loader's dev-pieces
+   * mode resolves `packages/pieces` relative to CWD, so this should point at
+   * a directory where `packages/pieces/<piece>/dist/package.json` exists.
+   */
+  cwd?: string;
+}
+
+export function spawnEngine(opts: SpawnEngineOptions): SpawnedEngine {
+  const env: Record<string, string> = {};
+  // Inherit a curated subset of the parent env. We avoid blasting the whole
+  // process.env into the engine because that leaks secrets into a sandboxed
+  // process; the engine only needs PATH / HOME / TMPDIR for child-process
+  // sandboxing of CODE actions.
+  // BUN_RUNTIME_TRANSPILER_CACHE_PATH: not a secret — forwarding it lets the
+  // engine child hit the host's shared read-only transpiler cache when it
+  // parses large piece SDK files (multi-tenant hosting warms it per version).
+  // Bun is fail-open on an unreadable/unwritable cache dir, so this can never
+  // break a spawn.
+  for (const key of [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
+  ]) {
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
+  env["SANDBOX_ID"] = opts.sandboxId;
+  env["AP_SANDBOX_WS_PORT"] = String(opts.sandboxWsPort);
+  env["AP_EXECUTION_MODE"] = opts.executionMode ?? "SANDBOX_PROCESS";
+  env["AP_BASE_CODE_DIRECTORY"] = opts.baseCodeDir;
+  env["AP_PAUSED_FLOW_TIMEOUT_DAYS"] = String(opts.pausedFlowTimeoutDays ?? 30);
+  if (opts.networkMode) env["AP_NETWORK_MODE"] = opts.networkMode;
+  if (opts.customPiecesPaths?.length) {
+    env["AP_CUSTOM_PIECES_PATHS"] = opts.customPiecesPaths.join(":");
+  }
+  if (opts.devPieces?.length) {
+    env["AP_DEV_PIECES"] = opts.devPieces.join(",");
+  }
+  for (const [k, v] of Object.entries(opts.env ?? {})) {
+    if (v === undefined) delete env[k];
+    else env[k] = v;
+  }
+
+  const runtime = opts.runtime ?? process.execPath;
+  // --smol: the engine is a short-lived-to-parked sandbox that grows to
+  // ~100MB under default JSC heap growth; the smaller-heap GC profile is the
+  // right trade for a subprocess whose CPU time is dominated by piece I/O.
+  // Bun-only flag, so skip it when opts.runtime overrides the binary.
+  const args = opts.runtime ? [opts.bundlePath] : ["--smol", opts.bundlePath];
+  const child = spawn(runtime, args, {
+    env,
+    cwd: opts.cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let isAlive = true;
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (res) => {
+      child.on("close", (code, signal) => {
+        isAlive = false;
+        res({ code, signal });
+      });
+    },
+  );
+
+  const spawnFailed = new Promise<never>((_res, rej) => {
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      isAlive = false;
+      rej(
+        new Error(
+          `engine process failed to start (${err.code ?? "unknown"}): ${err.message}`,
+        ),
+      );
+    });
+  });
+  // The caller races this; swallow the rejection so a failure it never got
+  // around to observing doesn't surface as an unhandled rejection.
+  void spawnFailed.catch(() => {});
+
+  return {
+    pid: child.pid ?? -1,
+    stdout: child.stdout,
+    stderr: child.stderr,
+    child,
+    exited,
+    spawnFailed,
+    kill: (signal = "SIGTERM") => child.kill(signal),
+    alive: () => isAlive,
+  };
+}
