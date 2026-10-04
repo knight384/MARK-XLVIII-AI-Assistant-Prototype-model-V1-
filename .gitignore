@@ -40,3 +40,4 @@ __MACOSX/
 # --- Runtime artifacts ---
 uploads/
 *.pid
+jarvis-main/
