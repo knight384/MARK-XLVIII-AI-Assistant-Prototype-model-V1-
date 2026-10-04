@@ -9,6 +9,11 @@ from core.agent.task import Task, TaskStatus
 from core.tools.base import CancellationToken, CancelReason
 from core.mission.models import Mission, MissionState, TriggerType
 from core.mission.store import get_default_store
+from core.goals.service import get_default_goal_service
+from core.goals.store import get_default_goal_store
+from core.goals.models import GoalState
+from core.personality.service import get_default_personality_service
+from core.awareness.tracker import get_default_tracker
 import time
 import uuid
 
@@ -199,3 +204,59 @@ async def get_mission_history(mission_id: str):
         raise HTTPException(status_code=404, detail="Mission not found")
     # Stubbed history for now; in a real app this would query a mission_history table
     return {"history": [{"event": "created", "timestamp": mission.created_at}]}
+
+class GoalCreateRequest(BaseModel):
+    title: str
+    description: str
+    priority: int = 0
+
+@app.post("/goals")
+async def create_goal(req: GoalCreateRequest):
+    svc = get_default_goal_service()
+    goal = svc.create_goal(title=req.title, description=req.description, priority=req.priority)
+    return goal.to_dict()
+
+@app.get("/goals")
+async def list_goals(state: Optional[str] = None):
+    store = get_default_goal_store()
+    st = GoalState(state) if state else None
+    return [g.to_dict() for g in store.list_goals(state=st)]
+
+@app.get("/goals/{goal_id}")
+async def get_goal(goal_id: str):
+    store = get_default_goal_store()
+    g = store.get(goal_id)
+    if not g:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return g.to_dict()
+
+@app.post("/goals/{goal_id}/complete")
+async def complete_goal(goal_id: str):
+    svc = get_default_goal_service()
+    if not svc.complete_goal(goal_id):
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return {"status": "completed"}
+
+@app.get("/awareness/signals")
+async def get_awareness_signals():
+    tracker = get_default_tracker()
+    return {"signals": [s.to_dict() for s in tracker.get_recent_signals()]}
+
+@app.get("/personality/preferences")
+async def get_personality_preferences():
+    svc = get_default_personality_service()
+    return {"preferences": [p.to_dict() for p in svc.get_all_preferences()]}
+
+class LearnRequest(BaseModel):
+    category: str
+    value: str
+    confidence: float = 0.5
+
+@app.post("/personality/learning")
+async def learn_personality(req: LearnRequest):
+    svc = get_default_personality_service()
+    pref = svc.learn_preference(req.category, req.value, req.confidence)
+    if not pref:
+        return {"status": "ignored"}
+    return pref.to_dict()
+

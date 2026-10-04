@@ -8,6 +8,9 @@ from core.agent.task import Task
 from core.tools.base import CancellationToken
 from core.mission.models import Mission, MissionState, TriggerType
 from core.mission.store import get_default_store
+from core.goals.service import get_default_goal_service
+from core.goals.store import get_default_goal_store
+from core.personality.service import get_default_personality_service
 import uuid
 import time
 
@@ -33,7 +36,10 @@ class MCPServer:
             "create_mission": "Create a new proactive or recurring mission",
             "list_missions": "List all missions and their statuses",
             "run_mission": "Manually trigger a mission execution",
-            "cancel_mission": "Cancel a scheduled or running mission"
+            "cancel_mission": "Cancel a scheduled or running mission",
+            "create_goal": "Create a new high-level goal",
+            "list_goals": "List active goals",
+            "inspect_personality": "Inspect learned personality preferences"
         }
 
     async def handle_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -134,5 +140,25 @@ class MCPServer:
             mission.state = MissionState.CANCELLED
             store.save(mission)
             return {"content": [{"type": "text", "text": f"Mission {mid} cancelled."}]}
+        elif tool_name == "create_goal":
+            title = args.get("title")
+            desc = args.get("description")
+            if not title or not desc:
+                return {"isError": True, "content": [{"type": "text", "text": "Missing title or description"}]}
+            svc = get_default_goal_service()
+            g = svc.create_goal(title, desc)
+            return {"content": [{"type": "text", "text": f"Created goal {g.id}"}]}
+
+        elif tool_name == "list_goals":
+            store = get_default_goal_store()
+            goals = store.list_goals()
+            resp = "\\n".join([f"[{g.id}] {g.title} - {g.state.value} ({g.progress}%)" for g in goals])
+            return {"content": [{"type": "text", "text": resp or "No goals"}]}
+
+        elif tool_name == "inspect_personality":
+            svc = get_default_personality_service()
+            prefs = svc.get_all_preferences()
+            resp = "\\n".join([f"{p.category}: {p.value} (conf: {p.confidence})" for p in prefs])
+            return {"content": [{"type": "text", "text": resp or "No preferences learned yet"}]}
                 
         return {"isError": True, "content": [{"type": "text", "text": "Unknown or restricted tool"}]}
