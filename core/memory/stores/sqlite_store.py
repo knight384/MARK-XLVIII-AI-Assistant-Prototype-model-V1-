@@ -28,7 +28,10 @@ import threading
 import time
 from pathlib import Path
 
-from ..models import MemoryRecord, MemoryType
+from ..models import (
+    EntityType, KnowledgeEntity, KnowledgeFact, KnowledgeRelationship,
+    MemoryRecord, MemoryType, Source
+)
 from .base import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -55,8 +58,47 @@ CREATE TABLE IF NOT EXISTS memory_records (
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_records(memory_type);
 CREATE INDEX IF NOT EXISTS idx_namespace ON memory_records(namespace);
 CREATE INDEX IF NOT EXISTS idx_project_id ON memory_records(project_id);
-"""
 
+CREATE TABLE IF NOT EXISTS knowledge_entities (
+    entity_id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    properties TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    namespace TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_k_ent_name ON knowledge_entities(name);
+CREATE INDEX IF NOT EXISTS idx_k_ent_namespace ON knowledge_entities(namespace);
+
+CREATE TABLE IF NOT EXISTS knowledge_facts (
+    fact_id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object_val TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    source TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    namespace TEXT NOT NULL,
+    FOREIGN KEY(subject_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_k_fact_subj ON knowledge_facts(subject_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_relationships (
+    rel_id TEXT PRIMARY KEY,
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    rel_type TEXT NOT NULL,
+    properties TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    namespace TEXT NOT NULL,
+    FOREIGN KEY(from_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE,
+    FOREIGN KEY(to_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_k_rel_from ON knowledge_relationships(from_id);
+CREATE INDEX IF NOT EXISTS idx_k_rel_to ON knowledge_relationships(to_id);
+"""
 
 class SqliteMemoryStore(MemoryStore):
     def __init__(self, path: Path):
@@ -159,6 +201,133 @@ class SqliteMemoryStore(MemoryStore):
             )
             self._conn.commit()
             return cur.rowcount
+
+    # -- Structured Knowledge Graph API --
+
+    def save_knowledge_entity(self, entity: KnowledgeEntity) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO knowledge_entities VALUES (?,?,?,?,?,?,?,?)",
+                (entity.entity_id, entity.entity_type.value, entity.name, json.dumps(entity.properties),
+                 entity.source.value, entity.created_at, entity.updated_at, entity.namespace)
+            )
+            self._conn.commit()
+
+    def get_knowledge_entity(self, entity_id: str) -> KnowledgeEntity | None:
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (entity_id,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        return KnowledgeEntity(
+            entity_id=row[0], entity_type=EntityType(row[1]), name=row[2], properties=json.loads(row[3]),
+            source=Source(row[4]), created_at=row[5], updated_at=row[6], namespace=row[7]
+        )
+
+    def search_knowledge_entities(self, name: str | None = None, entity_type: EntityType | None = None, namespace: str | None = None) -> list[KnowledgeEntity]:
+        clauses, params = [], []
+        if name:
+            clauses.append("name = ?")
+            params.append(name)
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type.value)
+        if namespace:
+            clauses.append("namespace = ?")
+            params.append(namespace)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM knowledge_entities {where} ORDER BY updated_at DESC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        
+        entities = []
+        for r in rows:
+            entities.append(KnowledgeEntity(
+                entity_id=r[0], entity_type=EntityType(r[1]), name=r[2], properties=json.loads(r[3]),
+                source=Source(r[4]), created_at=r[5], updated_at=r[6], namespace=r[7]
+            ))
+        return entities
+
+    def search_knowledge_entities_by_term(self, term: str, namespace: str | None = None) -> list[KnowledgeEntity]:
+        """Used for coarse retrieval matching entity name."""
+        with self._lock:
+            if namespace:
+                rows = self._conn.execute(
+                    "SELECT * FROM knowledge_entities WHERE name LIKE ? AND namespace = ?",
+                    (f"%{term}%", namespace)
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM knowledge_entities WHERE name LIKE ?",
+                    (f"%{term}%",)
+                ).fetchall()
+        entities = []
+        for r in rows:
+            entities.append(KnowledgeEntity(
+                entity_id=r[0], entity_type=EntityType(r[1]), name=r[2], properties=json.loads(r[3]),
+                source=Source(r[4]), created_at=r[5], updated_at=r[6], namespace=r[7]
+            ))
+        return entities
+
+    def save_knowledge_fact(self, fact: KnowledgeFact) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO knowledge_facts VALUES (?,?,?,?,?,?,?,?)",
+                (fact.fact_id, fact.subject_id, fact.predicate, fact.object_val,
+                 fact.confidence, fact.source.value, fact.created_at, fact.namespace)
+            )
+            self._conn.commit()
+
+    def get_knowledge_facts_for_subject(self, subject_id: str) -> list[KnowledgeFact]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM knowledge_facts WHERE subject_id = ?", (subject_id,)).fetchall()
+        
+        facts = []
+        for r in rows:
+            facts.append(KnowledgeFact(
+                fact_id=r[0], subject_id=r[1], predicate=r[2], object_val=r[3],
+                confidence=r[4], source=Source(r[5]), created_at=r[6], namespace=r[7]
+            ))
+        return facts
+
+    def search_knowledge_facts_by_term(self, term: str) -> list[KnowledgeFact]:
+        """Used for coarse retrieval matching predicate or object_val."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_facts WHERE predicate LIKE ? OR object_val LIKE ?",
+                (f"%{term}%", f"%{term}%")
+            ).fetchall()
+        facts = []
+        for r in rows:
+            facts.append(KnowledgeFact(
+                fact_id=r[0], subject_id=r[1], predicate=r[2], object_val=r[3],
+                confidence=r[4], source=Source(r[5]), created_at=r[6], namespace=r[7]
+            ))
+        return facts
+
+    def save_knowledge_relationship(self, rel: KnowledgeRelationship) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO knowledge_relationships VALUES (?,?,?,?,?,?,?)",
+                (rel.rel_id, rel.from_id, rel.to_id, rel.rel_type, json.dumps(rel.properties),
+                 rel.created_at, rel.namespace)
+            )
+            self._conn.commit()
+
+    def get_knowledge_relationships_for_entity(self, entity_id: str) -> list[KnowledgeRelationship]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_relationships WHERE from_id = ? OR to_id = ?",
+                (entity_id, entity_id)
+            ).fetchall()
+        
+        rels = []
+        for r in rows:
+            rels.append(KnowledgeRelationship(
+                rel_id=r[0], from_id=r[1], to_id=r[2], rel_type=r[3], properties=json.loads(r[4]),
+                created_at=r[5], namespace=r[6]
+            ))
+        return rels
 
     def close(self) -> None:
         with self._lock:

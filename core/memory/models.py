@@ -19,6 +19,16 @@ class MemoryType(str, Enum):
     PROJECT = "project"
 
 
+class EntityType(str, Enum):
+    """Types of entities in the structured knowledge graph."""
+    PERSON = "person"
+    PROJECT = "project"
+    TOOL = "tool"
+    PLACE = "place"
+    CONCEPT = "concept"
+    EVENT = "event"
+
+
 class Source(str, Enum):
     """Provenance — 'do not treat every AI-generated statement as equally
     trustworthy' (spec Part 27)."""
@@ -104,3 +114,40 @@ class RetrievalResult:
     record: MemoryRecord
     relevance: float
     reason: str = ""
+
+
+# -- Phase 11 Structured Knowledge Models --
+
+@dataclass
+class KnowledgeEntity:
+    name: str
+    entity_type: EntityType
+    entity_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    properties: dict[str, Any] = field(default_factory=dict)
+    source: Source = Source.SYSTEM
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    namespace: str = "global"
+
+
+@dataclass
+class KnowledgeFact:
+    subject_id: str
+    predicate: str
+    object_val: str
+    fact_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    confidence: float = 1.0
+    source: Source = Source.SYSTEM
+    created_at: float = field(default_factory=time.time)
+    namespace: str = "global"
+
+
+@dataclass
+class KnowledgeRelationship:
+    from_id: str
+    to_id: str
+    rel_type: str
+    rel_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    properties: dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+    namespace: str = "global"

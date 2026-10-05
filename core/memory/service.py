@@ -22,6 +22,7 @@ from .preferences import PreferenceMemory
 from .projects import ProjectMemory, derive_project_id
 from .retrieval import MemoryRetriever
 from .semantic import SemanticMemory
+from .knowledge import KnowledgeMemory
 from .stores.base import MemoryStore
 from .stores.json_store import JsonMemoryStore
 from .stores.sqlite_store import SqliteMemoryStore
@@ -62,7 +63,8 @@ class MemoryService:
             max_entries_per_scope=self._config.working_memory_limit,
             max_chars_per_scope=self._config.working_memory_max_chars,
         )
-        self._retriever = MemoryRetriever([preference_store, durable_store])
+        self._knowledge = KnowledgeMemory(durable_store)
+        self._retriever = MemoryRetriever([preference_store, durable_store], knowledge=self._knowledge)
         self._lock = threading.Lock()
 
         self.migration_report: MigrationReport | None = None
@@ -92,6 +94,10 @@ class MemoryService:
     @property
     def projects(self) -> ProjectMemory:
         return self._projects
+
+    @property
+    def knowledge(self) -> KnowledgeMemory:
+        return self._knowledge
 
     @property
     def config(self) -> MemoryConfig:

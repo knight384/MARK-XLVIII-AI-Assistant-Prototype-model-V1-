@@ -17,6 +17,7 @@ import time
 from .models import MemoryRecord, RetrievalQuery, RetrievalResult
 from .scoring import score_record
 from .stores.base import MemoryStore
+from .knowledge import KnowledgeMemory
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,9 @@ class MemoryRetriever:
     retrieval. A future vector-based retriever can implement the same
     `retrieve()` signature."""
 
-    def __init__(self, stores: list[MemoryStore]):
+    def __init__(self, stores: list[MemoryStore], knowledge: KnowledgeMemory | None = None):
         self._stores = stores
+        self._knowledge = knowledge
 
     def retrieve(self, query: RetrievalQuery) -> list[RetrievalResult]:
         limit = max(1, min(query.limit, _MAX_RETRIEVAL_LIMIT))
@@ -41,6 +43,10 @@ class MemoryRetriever:
                 memory_types=query.memory_types, namespace=query.namespace,
                 project_id=query.project_id, tags=query.tags,
             ))
+            
+        if self._knowledge:
+            # Synthesize Knowledge Graph profiles and add to candidates
+            candidates.extend(self._knowledge.retrieve_profiles_as_records(query.query, query.namespace))
 
         candidates = [c for c in candidates if not c.is_expired(now)]
 
