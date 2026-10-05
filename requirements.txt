@@ -67,6 +67,7 @@ fastapi>=0.111
 uvicorn[standard]>=0.29
 cryptography>=42.0
 python-multipart>=0.0.9   # optional: enables dashboard file uploads
+PyJWT>=2.8.0              # Sidecar device token authentication
 
 # --- Secret storage backend (Phase 1) ---
 # Preferred backend for core.config.secrets.SecretStore. If unavailable at

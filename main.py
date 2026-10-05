@@ -727,7 +727,7 @@ def setup_channels(runtime, jarvis):
         from dashboard.server import DashboardServer
         # We give the dashboard instance to JarvisLive so it can broadcast
         jarvis._dashboard = DashboardServer()
-        ws_ch = WebSocketChannel(jarvis._dashboard, "web_ui")
+        ws_ch = WebSocketChannel(jarvis._dashboard, "dashboard")
         runtime.channel_manager.register_channel(ws_ch)
     except Exception as e:
         logger.info(f"[Dashboard] Disabled: {e}")

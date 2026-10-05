@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 class WebSocketChannel(Channel):
     """Integrates the Web UI Dashboard as a communication channel."""
     
-    def __init__(self, dashboard: DashboardServer, channel_id: str = "web_ui"):
+    def __init__(self, dashboard: DashboardServer, channel_id: str = "dashboard"):
         super().__init__(channel_id, ChannelType.WEBSOCKET)
         self.dashboard = dashboard
         self._poll_task = None

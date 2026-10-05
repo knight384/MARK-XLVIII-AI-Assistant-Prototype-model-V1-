@@ -44,9 +44,6 @@ class LocalCapabilityProvider(CapabilityProvider):
         return caps
         
     async def execute(self, cap_id: str, args: Dict[str, Any], context: Any) -> Any:
-        # For actual execution, the ToolExecutor is used instead of directly calling this.
-        # This is purely a bridge if needed. The execution always routes through ToolExecutor/PolicyEngine.
-        tool = self._registry.get(cap_id)
-        if not tool:
-            raise ValueError(f"Capability {cap_id} not found in local provider")
-        return await tool.execute(args, context)
+        # For actual execution, the ToolExecutor MUST be used.
+        # Calling this directly bypasses the PolicyEngine and is unsafe.
+        raise RuntimeError("LocalCapabilityProvider.execute is unsafe and deprecated. Use core.tools.executor.ToolExecutor instead.")
