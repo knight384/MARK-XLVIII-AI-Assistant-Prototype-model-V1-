@@ -6,6 +6,8 @@ from typing import Optional
 from core.agent.orchestrator import get_default_orchestrator
 from .models import Mission, MissionState, TriggerType
 from .store import MissionStore
+from core.workflows.engine import get_default_engine
+from core.workflows.models import WorkflowRunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -77,24 +79,55 @@ class MissionScheduler:
             return
             
         try:
-            # Delegate to orchestrator (Task execution)
-            # This maintains the strict security boundary:
-            # Mission -> Task -> Orchestrator -> ToolExecutor -> PolicyEngine
-            task = await self._orchestrator.run_task(f"MISSION: {mission.name}\n{mission.description}")
-            
-            mission = self.store.get(mission_id)
-            if not mission:
-                return
+            workflow_id = mission.metadata.get("workflow_id")
+            if workflow_id:
+                # Mission -> Workflow
+                logger.info(f"[MissionScheduler] Starting workflow {workflow_id} for mission {mission_id}")
+                engine = get_default_engine()
+                # Ensure the run completes. We spawn it and then technically wait for it to complete or just let the workflow worker handle it.
+                # Since the scheduler loop currently awaits the task, we can just start the run here,
+                # and in a real system we'd poll or listen for workflow completion event.
+                # For now, we just spawn it and mark mission SUCCEEDED (or we can poll the workflow state).
+                run = engine.start_run(workflow_id, context={"mission_id": mission_id}, mission_id=mission_id)
+                # Wait for workflow completion
+                while True:
+                    await asyncio.sleep(2.0)
+                    r = engine.store.get_run(run.id)
+                    if not r:
+                        raise RuntimeError(f"Workflow run {run.id} disappeared")
+                    if r.status in (WorkflowRunStatus.SUCCEEDED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED, WorkflowRunStatus.TIMED_OUT):
+                        break
                 
-            mission.attempt_count += 1
-            
-            if task.status.value == "COMPLETED":
-                mission.state = MissionState.SUCCEEDED
-                mission.result_summary = "Task completed successfully."
-                # Reschedule if recurring
-                self._calculate_next_run(mission)
+                mission = self.store.get(mission_id)
+                if not mission:
+                    return
+                mission.attempt_count += 1
+                
+                if r.status == WorkflowRunStatus.SUCCEEDED:
+                    mission.state = MissionState.SUCCEEDED
+                    mission.result_summary = f"Workflow {workflow_id} completed successfully."
+                    self._calculate_next_run(mission)
+                else:
+                    self._handle_failure(mission, f"Workflow {workflow_id} ended with status {r.status.value}: {r.error}")
             else:
-                self._handle_failure(mission, "Task did not complete successfully.")
+                # Delegate to orchestrator (Task execution)
+                # This maintains the strict security boundary:
+                # Mission -> Task -> Orchestrator -> ToolExecutor -> PolicyEngine
+                task = await self._orchestrator.run_task(f"MISSION: {mission.name}\n{mission.description}")
+                
+                mission = self.store.get(mission_id)
+                if not mission:
+                    return
+                    
+                mission.attempt_count += 1
+                
+                if task.status.value == "COMPLETED":
+                    mission.state = MissionState.SUCCEEDED
+                    mission.result_summary = "Task completed successfully."
+                    # Reschedule if recurring
+                    self._calculate_next_run(mission)
+                else:
+                    self._handle_failure(mission, "Task did not complete successfully.")
                 
         except Exception as e:
             mission = self.store.get(mission_id)
