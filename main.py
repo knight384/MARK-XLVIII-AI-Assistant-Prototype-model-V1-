@@ -26,7 +26,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-import sounddevice as sd
 from google.genai import types
 from ui import JarvisUI
 from memory.memory_manager import (
@@ -137,6 +136,7 @@ class JarvisLive:
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._live_adapter     = GeminiLiveAdapter(api_key_getter=_get_api_key)
+        self._channel_manager  = None
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -340,7 +340,9 @@ class JarvisLive:
                             _audio_data = response.data
                             _SLICE = 2400
                             for _i in range(0, len(_audio_data), _SLICE):
-                                self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
+                                chunk = _audio_data[_i : _i + _SLICE]
+                                if getattr(self, "_channel_manager", None):
+                                    asyncio.create_task(self._channel_manager.broadcast_audio(chunk))
 
                     if response.server_content:
                         sc = response.server_content
@@ -360,8 +362,6 @@ class JarvisLive:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
-                            # If this turn_complete ends an interrupted response, clear the
-                            # flag and skip all further processing for that turn.
                             if self._interrupted:
                                 self._interrupted = False
                                 in_buf  = []
@@ -371,23 +371,15 @@ class JarvisLive:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
-                                if self._dashboard:
-                                    asyncio.create_task(self._dashboard.broadcast({
-                                        "type": "log", "speaker": "user",
-                                        "text": full_in,
-                                        "ts": datetime.now().isoformat(),
-                                    }))
+                                if hasattr(self, "_channel_manager"):
+                                    asyncio.create_task(self._channel_manager.broadcast_text(f"You: {full_in}"))
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
                                 self.ui.write_log(f"Jarvis: {full_out}")
-                                if self._dashboard:
-                                    asyncio.create_task(self._dashboard.broadcast({
-                                        "type": "log", "speaker": "jarvis",
-                                        "text": full_out,
-                                        "ts": datetime.now().isoformat(),
-                                    }))
+                                if hasattr(self, "_channel_manager"):
+                                    asyncio.create_task(self._channel_manager.broadcast_text(f"Jarvis: {full_out}"))
                             out_buf = []
 
                             # Vision injection: model finished tool-response turn → now send the image
@@ -434,46 +426,6 @@ class JarvisLive:
             logger.error(f"[JARVIS] ❌ Recv: {e}")
             traceback.print_exc()
             raise
-
-    async def _play_audio(self):
-        logger.info("[JARVIS] 🔊 Play started")
-
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
-
-        try:
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        self.audio_in_queue.get(),
-                        timeout=0.1
-                    )
-                except asyncio.TimeoutError:
-                    if (
-                        self._turn_done_event
-                        and self._turn_done_event.is_set()
-                        and self.audio_in_queue.empty()
-                    ):
-                        self.set_speaking(False)
-                        self._turn_done_event.clear()
-                    continue
-                self.set_speaking(True)
-                try:
-                    await asyncio.to_thread(stream.write, chunk)
-                except (RuntimeError, asyncio.CancelledError):
-                    break   # executor shutting down — exit cleanly
-        except Exception as e:
-            logger.error(f"[JARVIS] ❌ Play: {e}")
-            raise
-        finally:
-            self.set_speaking(False)
-            stream.stop()
-            stream.close()
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 
@@ -602,80 +554,32 @@ class JarvisLive:
             except Exception as e:
                 logger.warning(f"[Proactive] ⚠️ {e}")
 
-    # ── Phone audio relay ────────────────────────────────────────────────────────
 
-    async def _relay_phone_audio(self) -> None:
-        """Forward phone mic PCM chunks from dashboard queue into the Gemini Live session."""
-        q = self._dashboard._phone_audio_queue
-        while True:
-            try:
-                chunk = await asyncio.wait_for(q.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                # No audio for 1 s → phone mic inactive, give PC mic back
-                self._phone_active = False
-                continue
-            self._phone_active = True   # phone is streaming — silence PC mic
-            with self._speaking_lock:
-                speaking = self._is_speaking
-            if not speaking and not self.ui.muted:
-                try:
-                    self.out_queue.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    pass
-
-    def _on_phone_connected(self) -> None:
-        self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
-        self.ui.notify_phone_connected()
-
-    # ── dashboard command relay ─────────────────────────────────────────────
-
-    async def _process_dashboard_commands(self) -> None:
-        while True:
-            try:
-                text = await asyncio.wait_for(
-                    self._dashboard._command_queue.get(), timeout=0.5
-                )
-                if not text:
-                    continue
-                # Wait up to 8s for session to become ready after a wake
-                for _ in range(80):
-                    if self.session:
-                        break
-                    await asyncio.sleep(0.1)
-                if self.session:
-                    # Phase 6: mark the next tool call(s) as dashboard-originated
-                    # so the PolicyEngine applies stricter remote-request rules
-                    # (see _execute_tool). Consumed/reset there.
-                    self._pending_request_source = "dashboard"
-                    await self.session.send_client_content(
-                        turns={"parts": [{"text": text}]},
-                        turn_complete=True,
-                    )
-                    self.ui.write_log(f"[Web]: {text}")
-                else:
-                    logger.warning(f"[Dashboard] Dropped command (no session): {text}")
-            except asyncio.TimeoutError:
-                pass
-            except Exception as e:
-                logger.error(f"[Dashboard] Command error: {e}")
-                await asyncio.sleep(0.5)
+    async def _handle_channel_message(self, msg):
+        """Phase 13: Handle inbound ChannelMessage from any source."""
+        if not self.session:
+            return
+            
+        if msg.metadata.get("is_audio"):
+            # Stream raw audio to Gemini Live
+            audio_bytes = msg.metadata.get("audio_bytes")
+            if audio_bytes:
+                self.out_queue.put_nowait({"data": audio_bytes, "mime_type": "audio/pcm"})
+        else:
+            # Handle text message
+            self._pending_request_source = msg.source
+            await self.session.send_client_content(
+                turns={"parts": [{"text": msg.content}]},
+                turn_complete=True
+            )
+            self.ui.write_log(f"[{msg.source}]: {msg.content}")
 
     # ── main loop ───────────────────────────────────────────────────────────
 
     async def run(self):
         self._loop = asyncio.get_event_loop()
-
-        # Start dashboard (optional — needs: pip install fastapi "uvicorn[standard]" cryptography)
-        try:
-            from dashboard.server import DashboardServer
-            self._dashboard = DashboardServer()
-            self._dashboard.set_connect_callback(self._on_phone_connected)
-            asyncio.create_task(self._dashboard.serve())
-            # Runs for the whole lifetime, not just inside an active session
-            asyncio.create_task(self._process_dashboard_commands())
-        except Exception as e:
-            logger.info(f"[Dashboard] Disabled: {e}")
-            self._dashboard = None
+        # Dashboard logic is now managed by WebSocketChannel in main()
+        self._dashboard = None
 
         while True:
             try:
@@ -713,13 +617,9 @@ class JarvisLive:
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
 
                     tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
                     tg.create_task(self._run_system_monitor())
                     tg.create_task(self._run_proactive_mode())
-                    if self._dashboard:
-                        tg.create_task(self._relay_phone_audio())
 
                     # Morning briefing — fires once per process launch
                     if not self._briefing_sent:
@@ -778,6 +678,33 @@ class JarvisLive:
             logger.info(f"[JARVIS] Reconnecting in {delay}s...")
             await asyncio.sleep(delay)
 
+def setup_channels(runtime, jarvis):
+    # Setup Phase 13 channels
+    from core.channels.voice import VoiceChannel
+    from core.channels.websocket import WebSocketChannel
+    
+    # 1. VoiceChannel (configured to stream raw PCM directly to Gemini Live)
+    voice_ch = VoiceChannel("voice")
+    voice_ch._stream_raw_audio = True
+    runtime.channel_manager.register_channel(voice_ch)
+    
+    # 2. WebSocketChannel (Dashboard)
+    try:
+        from dashboard.server import DashboardServer
+        # We give the dashboard instance to JarvisLive so it can broadcast
+        jarvis._dashboard = DashboardServer()
+        ws_ch = WebSocketChannel(jarvis._dashboard, "web_ui")
+        runtime.channel_manager.register_channel(ws_ch)
+    except Exception as e:
+        logger.info(f"[Dashboard] Disabled: {e}")
+        
+    # Hook JarvisLive into ChannelManager
+    jarvis._channel_manager = runtime.channel_manager
+    async def _msg_handler(msg):
+        await jarvis._handle_channel_message(msg)
+    runtime.channel_manager._handle_channel_message = _msg_handler
+
+
 def main():
     import sys
     from core.runtime.app import MarkRuntime
@@ -794,8 +721,11 @@ def main():
         
         async def headless_runner():
             await runtime.initialize()
-            await runtime.start()
+            
             jarvis = JarvisLive(ui)
+            setup_channels(runtime, jarvis)
+            
+            await runtime.start()
             
             # Start jarvis.run as task
             jarvis_task = asyncio.create_task(jarvis.run())
@@ -820,10 +750,13 @@ def main():
         def runner():
             async def desktop_runner():
                 await runtime.initialize()
+                
+                jarvis = JarvisLive(ui)
+                setup_channels(runtime, jarvis)
+                
                 await runtime.start()
                 
                 ui.wait_for_api_key()
-                jarvis = JarvisLive(ui)
                 
                 jarvis_task = asyncio.create_task(jarvis.run())
                 

@@ -14,7 +14,10 @@ import threading
 from typing import Callable, Optional
 
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
 
 
 

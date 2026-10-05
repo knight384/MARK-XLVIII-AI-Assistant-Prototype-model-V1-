@@ -6,6 +6,10 @@ from typing import Optional
 from .mode import RuntimeMode
 from .identity import RuntimeIdentity
 from .services import ServiceRegistry
+from core.channels.manager import ChannelManager
+from core.runtime.sidecar_manager import SidecarManager
+from core.config.secrets import SecretStore
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +19,18 @@ class MarkRuntime:
         self.mode = mode
         self.identity = RuntimeIdentity(mode=self.mode)
         self.services = ServiceRegistry()
+        self.channel_manager = ChannelManager()
+        
+        # SecretStore and SidecarManager initialization
+        # Use default paths relative to execution
+        import sys
+        if getattr(sys, "frozen", False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).resolve().parents[2]
+        self.secret_store = SecretStore(base_dir / "config" / "secrets.json")
+        self.sidecar_manager = SidecarManager(self.channel_manager, self.secret_store)
+        
         self._shutdown_event = asyncio.Event()
         
     async def initialize(self):
@@ -25,6 +41,7 @@ class MarkRuntime:
     async def start(self):
         """Phase 2: Start all registered services in order."""
         await self.services.start_all()
+        await self.channel_manager.start()
         logger.info(f"[Runtime] MARK XLVIII Runtime Started (ID: {self.identity.runtime_id})")
         
     async def wait_until_shutdown(self):
@@ -34,6 +51,7 @@ class MarkRuntime:
     async def stop(self):
         """Phase 4: Graceful teardown of all services in reverse order."""
         logger.info("[Runtime] Shutting down MARK XLVIII...")
+        await self.channel_manager.stop()
         await self.services.stop_all()
         logger.info("[Runtime] Shutdown complete.")
 
