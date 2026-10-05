@@ -62,18 +62,18 @@ def rule_critical_commands_disabled(ctx: PolicyContext, config: PolicyConfig) ->
 
 def rule_remote_critical(ctx: PolicyContext, config: PolicyConfig) -> PolicyResult | None:
     """spec Part 20: 'Remote CRITICAL -> DENY by default.'"""
-    if ctx.source == RequestSource.DASHBOARD and ctx.risk_level == RiskLevel.CRITICAL and config.deny_remote_critical:
+    if ctx.source in (RequestSource.DASHBOARD, RequestSource.SIDECAR) and ctx.risk_level == RiskLevel.CRITICAL and config.deny_remote_critical:
         return PolicyResult(PolicyDecision.DENY,
-                             "CRITICAL-risk actions are not permitted from remote/dashboard sessions.",
+                             "CRITICAL-risk actions are not permitted from remote/dashboard/sidecar sessions.",
                              ctx.risk_level, matched_rule="remote_critical_denied")
     return None
 
 
 def rule_remote_high_disabled(ctx: PolicyContext, config: PolicyConfig) -> PolicyResult | None:
-    if (ctx.source == RequestSource.DASHBOARD and ctx.risk_level == RiskLevel.HIGH
+    if (ctx.source in (RequestSource.DASHBOARD, RequestSource.SIDECAR) and ctx.risk_level == RiskLevel.HIGH
             and not config.allow_remote_high_risk):
         return PolicyResult(PolicyDecision.DENY,
-                             "HIGH-risk actions from remote/dashboard sessions are disabled by policy.",
+                             "HIGH-risk actions from remote/dashboard/sidecar sessions are disabled by policy.",
                              ctx.risk_level, matched_rule="remote_high_disabled")
     return None
 

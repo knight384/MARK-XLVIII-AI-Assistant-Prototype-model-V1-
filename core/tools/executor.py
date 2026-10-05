@@ -208,7 +208,10 @@ class ToolExecutor:
     def _evaluate_policy(self, tool: Tool, args: dict, context: ToolContext):
         from core.policy import PolicyContext, RequestSource
         try:
-            source = RequestSource(context.source)
+            if context.source and context.source.startswith("sidecar_"):
+                source = RequestSource.SIDECAR
+            else:
+                source = RequestSource(context.source)
         except ValueError:
             source = RequestSource.LOCAL_AGENT
 
@@ -255,7 +258,10 @@ class ToolExecutor:
                 return _ApprovalOutcome(False, str(exc), type(exc).__name__, context.approval_id)
 
         try:
-            source = RequestSource(context.source)
+            if context.source and context.source.startswith("sidecar_"):
+                source = RequestSource.SIDECAR
+            else:
+                source = RequestSource(context.source)
         except ValueError:
             source = RequestSource.LOCAL_AGENT
 

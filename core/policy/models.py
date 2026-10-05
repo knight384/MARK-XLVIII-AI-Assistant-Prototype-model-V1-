@@ -26,6 +26,7 @@ class RequestSource(str, Enum):
     LOCAL_AGENT = "local_agent"          # Agent Runtime, triggered locally
     DASHBOARD = "dashboard"              # remote dashboard/web UI
     SYSTEM = "system"                    # internal/system-initiated (e.g. startup checks)
+    SIDECAR = "sidecar"                  # Remote sidecar/device
 
 
 @dataclass

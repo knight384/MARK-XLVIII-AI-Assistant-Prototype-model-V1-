@@ -565,6 +565,40 @@ class JarvisLive:
             audio_bytes = msg.metadata.get("audio_bytes")
             if audio_bytes:
                 self.out_queue.put_nowait({"data": audio_bytes, "mime_type": "audio/pcm"})
+        elif msg.metadata.get("is_rpc"):
+            # Sidecar is directly invoking a tool over RPC
+            method = msg.metadata.get("method")
+            params = msg.metadata.get("params", {})
+            rpc_id = msg.metadata.get("rpc_id")
+            
+            logger.info(f"[RPC] Request from {msg.source}: {method}")
+            
+            # Use local ToolExecutor to process the RPC.
+            # This implicitly goes through PolicyEngine, ApprovalManager, etc.
+            self._pending_request_source = msg.source
+            context = ToolContext(
+                extra={"ui": self.ui, "speak": self.speak, "live": self},
+                source=msg.source, session_id=getattr(self, "_session_id", None),
+            )
+            
+            try:
+                # _tool_executor is global in main.py
+                tool_result = await _tool_executor.execute(method, params, context)
+                
+                # Send the response back
+                if hasattr(self, "_channel_manager") and self._channel_manager:
+                    channel = self._channel_manager.get_channel(msg.source)
+                    if channel and hasattr(channel, "send_rpc_response"):
+                        if tool_result.success:
+                            await channel.send_rpc_response(rpc_id, result=tool_result.as_model_text())
+                        else:
+                            await channel.send_rpc_response(rpc_id, error=tool_result.error)
+            except Exception as e:
+                logger.error(f"[RPC] Execution failed: {e}")
+                if hasattr(self, "_channel_manager") and self._channel_manager:
+                    channel = self._channel_manager.get_channel(msg.source)
+                    if channel and hasattr(channel, "send_rpc_response"):
+                        await channel.send_rpc_response(rpc_id, error=str(e))
         else:
             # Handle text message
             self._pending_request_source = msg.source

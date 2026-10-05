@@ -12,10 +12,11 @@ class SidecarChannel(Channel):
     Translates raw WebSocket JSON/Binary into MARK-native ChannelMessages.
     """
     
-    def __init__(self, sidecar_id: str, websocket):
+    def __init__(self, sidecar_id: str, websocket, registry):
         super().__init__(f"sidecar_{sidecar_id}", ChannelType.WEBSOCKET)
         self.sidecar_id = sidecar_id
         self._ws = websocket
+        self._registry = registry
         self._running = False
         self._recv_task = None
         self.state = "CONNECTED" # CONNECTING, AUTHENTICATING, CONNECTED, READY, DISCONNECTED
@@ -66,7 +67,40 @@ class SidecarChannel(Channel):
 
     async def _handle_protocol_message(self, msg: dict):
         msg_type = msg.get("type")
-        if msg_type == "text_message":
+        if msg_type == "register":
+            device = self._registry.get_device(self.sidecar_id)
+            if device:
+                # Update device info based on registration payload
+                device.platform = msg.get("platform", device.platform)
+                device.client_version = msg.get("version", device.client_version)
+                from core.devices.models import SidecarCapability
+                caps_list = msg.get("capabilities", [])
+                capabilities = []
+                for cap in caps_list:
+                    try:
+                        capabilities.append(SidecarCapability(cap))
+                    except ValueError:
+                        pass
+                device.capabilities = capabilities
+                self._registry.register_device(device)
+                logger.info(f"[SidecarChannel] Registered sidecar {self.sidecar_id} on {device.platform} with capabilities: {caps_list}")
+                
+        elif msg_type == "capabilities_update":
+            device = self._registry.get_device(self.sidecar_id)
+            if device:
+                from core.devices.models import SidecarCapability
+                caps_list = msg.get("capabilities", [])
+                capabilities = []
+                for cap in caps_list:
+                    try:
+                        capabilities.append(SidecarCapability(cap))
+                    except ValueError:
+                        pass
+                device.capabilities = capabilities
+                self._registry.register_device(device)
+                logger.info(f"[SidecarChannel] Updated capabilities for {self.sidecar_id}: {caps_list}")
+
+        elif msg_type == "text_message":
             # Standard typed text
             text = msg.get("text", "")
             if text:
